@@ -33,18 +33,33 @@ for IP in (:(Lagrange{RefQuadrilateral, 1}),
     end
 end
 
+# 
+# struct KoppCell <: AbstractCell{AbstractRefShape{2}, GArray <: AbstractArray}
+    # parent_secquence::GArray{Pair{Int, Int}}
+    # root::Int
+    # neighbors::GArray{4, Int}
+    # isleaf::Bool
+# end
+# 
+
 struct KoppCell <: AbstractCell{AbstractRefShape{2}}
-    parent_secquence::Vector{Int}
-    refinement_level::Int # Remove this
-    parent::Int
+    parent_secquence::Vector{Int} # TODO: use two integers instead? alloc == bad
+    children::MVector{4, Int}
     root::Int
-    neighbors::Vector{Int}
-    children::Vector{Int} # Remove this?
+    neighbors::MVector{4, Pair{Int, Int}}
+    isleaf::Bool
 end
+
+struct KoppRoot <: AbstractCell{AbstractRefShape{2}}
+    children::Vector{KoppCell}
+    refinement_index::ScalarWrapper{Int}
+    neighbors::MVector{4, Int}
+end
+
 
 mutable struct KoppGrid{G}
     base_grid::G
-    kopp_cells::Vector{KoppCell}
+    kopp_roots::Vector{KoppRoot}
 end
 
 struct KoppCellCache{dim,X,G<:AbstractGrid,DH<:Union{AbstractDofHandler,Nothing}}
@@ -64,26 +79,26 @@ end
 function generate_grid(C::Type{KoppCell}, nel::NTuple{2,Int}) where {T}
     grid =  generate_grid(Quadrilateral, nel)
     topology = ExclusiveTopology(grid)
-    cells = KoppCell[]
+    cells = KoppRoot[]
     for cell in 1:getncells(grid)
-        neighborhood = [isempty(face) ? -1 : face[1][1] for face in topology.face_face_neighbor[cell, :]]
-        push!(cells, Ferrite.KoppCell(Int[],0,0,cell,neighborhood,Int[0,0,0,0]))
+        neighborhood = MVector{4}([isempty(face) ? -1 : face[1][1] for face in topology.edge_edge_neighbor[cell, :]])
+        push!(cells, Ferrite.KoppRoot(KoppCell[],ScalarWrapper(0), neighborhood))
     end
     return Ferrite.KoppGrid(grid, cells)
 end
 function get_refined_neighbor(grid::KoppGrid, neighboring_cell::Int, current_face::FaceIndex)
-    neighboring_cell == -1 && return -1
-    cell = grid.kopp_cells[neighboring_cell]
-    if cell.children == [0,0,0,0]
-        return neighboring_cell
+    neighboring_cell == -1 && return -1 => 0
+    cell = grid.kopp_roots[neighboring_cell]
+    if cell.children |> isempty
+        return neighboring_cell => 0
     elseif current_face ∈ (FaceIndex(1,1), FaceIndex(3,2))
-        return cell.children[4]
+        return neighboring_cell =>  4
     elseif current_face ∈ (FaceIndex(1,4), FaceIndex(3,3))
-        return cell.children[2]
+        return neighboring_cell =>  2
     elseif current_face ∈ (FaceIndex(2,1), FaceIndex(4,4))
-        return cell.children[3]
+        return neighboring_cell =>  3
     elseif current_face ∈ (FaceIndex(2,2), FaceIndex(4,3))
-        return cell.children[1]
+        return neighboring_cell =>  1
     end
 end
 refined_neighborhood_table = (
@@ -99,6 +114,26 @@ boundary_faces = (
     (2,3),
     (3,4)
 )
+function refine_root!(kopp_grid::KoppGrid, cell_idx::Int)
+    kopp_root = kopp_grid.kopp_roots[cell_idx]
+    parent = kopp_grid.kopp_roots[cell_idx]
+    append!(kopp_root.children,
+        ntuple(i -> KoppCell(
+            [i],
+            MVector{4}(1,2,3,4),
+            cell_idx,
+            MVector{4}(ntuple(j -> refined_neighborhood_table[i][j] == 0 ? Ferrite.get_refined_neighbor(kopp_grid,parent.neighbors[j],FaceIndex(i,j)) : (cell_idx => (parent.refinement_index[] + refined_neighborhood_table[i][j])), 4)),
+            true
+        ), 4)
+    )
+    parent.refinement_index[] += 4
+    # struct KoppCell <: AbstractCell{AbstractRefShape{2}}
+    #     parent_secquence::Vector{Pair{Int, Int}}
+    #     root::Int
+    #     neighbors::MVector{4, Int}
+    #     isleaf::Bool
+    # end
+end
 function refine!(kopp_grid::KoppGrid, cell::Int)
     nkoppcells = length(kopp_grid.kopp_cells)
     parent = kopp_grid.kopp_cells[cell]
