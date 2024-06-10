@@ -33,7 +33,7 @@ for IP in (:(Lagrange{RefQuadrilateral, 1}),
     end
 end
 
-struct KoppCell <: AbstractCell{AbstractRefShape{2}}
+mutable struct KoppCell <: AbstractCell{AbstractRefShape{2}}
     secquence::Int # TODO: use two integers instead? alloc == bad
     parent::Int
     children::NTuple{4, Int}
@@ -86,7 +86,7 @@ function generate_grid(C::Type{KoppCell}, nel::NTuple{2,Int}) where {T}
             KoppCell(
             0,
             -1,
-            ntuple(j -> j, 4),
+            ntuple(j -> 0, 4),
             cell,
             neighborhood,
             true
@@ -95,20 +95,25 @@ function generate_grid(C::Type{KoppCell}, nel::NTuple{2,Int}) where {T}
     end
     return Ferrite.KoppGrid(grid, cells)
 end
-function get_refined_neighbor(grid::G, neighboring_cell::Pair{Int, Int}, current_face::FaceIndex) where G <: KoppGrid
+function get_refined_neighbor(grid::G, neighboring_cell::Pair{Int, Int}, current_face::FaceIndex, n::Pair{Int, Int}) where G <: KoppGrid
     neighboring_cell[1] == -1 && return -1 => 0
-    cell = grid.kopp_roots[neighboring_cell[1]]
-    if cell.children |> isempty
-        return neighboring_cell => 0
+    root = grid.kopp_roots[neighboring_cell[1]]
+    cell = root.children[neighboring_cell[2] + 1]
+    if cell.children == (0, 0, 0, 0)
+        return neighboring_cell
     elseif current_face ∈ (FaceIndex(1,1), FaceIndex(3,2))
-        return neighboring_cell[1] =>  4
+        cell_idx = cell.children[4]
     elseif current_face ∈ (FaceIndex(1,4), FaceIndex(3,3))
-        return neighboring_cell[1] =>  2
+        cell_idx = cell.children[2]
     elseif current_face ∈ (FaceIndex(2,1), FaceIndex(4,4))
-        return neighboring_cell[1] =>  3
+        cell_idx = cell.children[3]
     elseif current_face ∈ (FaceIndex(2,2), FaceIndex(4,3))
-        return neighboring_cell[1] =>  1
+        cell_idx = cell.children[1]
     end
+    cell = root.children[cell_idx + 1]
+    neighboring_face = face_face_neighbor_local[current_face[2]]
+    cell.neighbors = ntuple(i -> i == neighboring_face ? n : cell.neighbors[i], 4)
+    return neighboring_cell[1] =>  cell_idx
 end
 refined_neighborhood_table = SMatrix{4,4}(
     0,2,4,0,
@@ -124,35 +129,16 @@ boundary_faces = SMatrix{4,2}(
     3,4
 )
 
-
-
-function get_refined_neighbor(grid::G, parent_neighbot_idx::Pair{Int, Int}, current_face::FaceIndex) where G <: KoppGrid
-    neighbor_root_idx = parent_neighbot_idx[1]
-    neighbor_cell_idx = parent_neighbot_idx[2]
-    neighbor_root_idx == -1 && return -1 => 0
-    neighbor_root = grid.kopp_roots[neighbor_root_idx]
-    neighbor_cell = neighbor_root.children[neighbor_cell_idx]
-    @info neighbor_cell
-    @info get_refinement_level(neighbor_root, neighbor_cell)
-
-    if neighbor_cell.children == zeros(4)
-        return neighboring_cell => 0
-    elseif current_face ∈ (FaceIndex(1,1), FaceIndex(3,2))
-        return neighboring_cell[1] =>  4
-    elseif current_face ∈ (FaceIndex(1,4), FaceIndex(3,3))
-        return neighboring_cell[1] =>  2
-    elseif current_face ∈ (FaceIndex(2,1), FaceIndex(4,4))
-        return neighboring_cell[1] =>  3
-    elseif current_face ∈ (FaceIndex(2,2), FaceIndex(4,3))
-        return neighboring_cell[1] =>  1
-    end
+function get_neighbors(grid::KoppGrid, cell::Pair{Int, Int})
+    return grid.kopp_roots[cell[1]].children[cell[2] + 1].neighbors
 end
 
 
 function refine!(kopp_grid::KoppGrid, cell_idx::Pair{Int, Int})
     kopp_root = kopp_grid.kopp_roots[cell_idx[1]]
-    parent = kopp_grid.kopp_roots[cell_idx[1]]
     idx = kopp_root.refinement_index[]
+    cell = kopp_root.children[cell_idx[2] + 1]
+    @assert cell.isleaf "Cell must be a leaf to be refined"
     refined_neighborhood_table = SMatrix{4,4}(
     0,2,4,0,
     0,0,3,1,
@@ -164,13 +150,12 @@ function refine!(kopp_grid::KoppGrid, cell_idx::Pair{Int, Int})
             i,
             cell_idx[2],
             ntuple(j -> 0, 4),
-            # ntuple(j -> idx + j, 4),
             cell_idx[1],
-            ntuple( j ->(cell_idx[1] => (idx + refined_neighborhood_table[i,j])) , 4),
+            ntuple( j -> refined_neighborhood_table[j, i] == 0 ? get_refined_neighbor(kopp_grid, cell.neighbors[j], FaceIndex(i,j), cell_idx[1] => idx + i) : (cell_idx[1] => (idx + refined_neighborhood_table[j,i])) , 4),
             true
         ))
     end
-
+    cell.children = ntuple(i-> idx + i, 4)
+    cell.isleaf = false
     kopp_root.refinement_index[] += 4
-
 end
