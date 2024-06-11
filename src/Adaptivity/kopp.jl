@@ -40,12 +40,14 @@ mutable struct KoppCell <: AbstractCell{AbstractRefShape{2}}
     root::Int
     neighbors::NTuple{4, Pair{Int, Int}}
     isleaf::Bool
+    refine::Bool
 end
 
 struct KoppRoot <: AbstractCell{AbstractRefShape{2}}
     children::Vector{KoppCell}
     refinement_index::ScalarWrapper{Int}
 end
+
 
 function get_refinement_level(root::KoppRoot, cell::KoppCell)
     parent = cell.parent
@@ -89,7 +91,8 @@ function generate_grid(C::Type{KoppCell}, nel::NTuple{2,Int}) where {T}
             ntuple(j -> 0, 4),
             cell,
             neighborhood,
-            true
+            true,
+            false
         )
         ],ScalarWrapper(0)))
     end
@@ -152,10 +155,91 @@ function refine!(kopp_grid::KoppGrid, cell_idx::Pair{Int, Int})
             ntuple(j -> 0, 4),
             cell_idx[1],
             ntuple( j -> refined_neighborhood_table[j, i] == 0 ? get_refined_neighbor(kopp_grid, cell.neighbors[j], FaceIndex(i,j), cell_idx[1] => idx + i) : (cell_idx[1] => (idx + refined_neighborhood_table[j,i])) , 4),
-            true
+            true,
+            false
         ))
     end
     cell.children = ntuple(i-> idx + i, 4)
     cell.isleaf = false
     kopp_root.refinement_index[] += 4
+end
+
+
+
+struct KoppDofHandler{dim,G<:AbstractGrid{dim}} <: AbstractDofHandler
+    subdofhandlers::Vector{SubDofHandler{DofHandler{dim, G}}}
+    field_names::Vector{Symbol}
+    # Dofs for cell i are stored in cell_dofs at the range:
+    #     cell_dofs_offset[i]:(cell_dofs_offset[i]+ndofs_per_cell(dh, i)-1)
+    cell_dofs::Vector{Vector{Int}}
+    cell_dofs_offset::Vector{Vector{Int}}
+    cell_to_subdofhandler::Vector{Vector{Int}} # maps cell id -> SubDofHandler id
+    closed::ScalarWrapper{Bool}
+    grid::G
+    ndofs::ScalarWrapper{Int}
+    n_refinement_dofs::Vector{Tuple{Int, Int}} # n_unshared_dofs, n_(new)shared_dofs
+    refinement_start_idx::Vector{Int}
+end
+# function KoppDofHandler(grid::KoppGrid)
+#     dh = DofHandler(grid.base_grid)
+#     return KoppDofHandler(
+#         dh.subdofhandlers,
+#         dh.field_names,
+#         [Int[] for i in eachindex(grid.kopp_roots)],
+#         [[dh.cell_dofs_offset[i]] for i in eachindex(grid.kopp_roots)],
+#         [[dh.cell_to_subdofhandler[i]] for i in eachindex(grid.kopp_roots)],
+#         dh.closed,
+#         grid.base_grid,
+#         dh.ndofs
+#     )
+# end
+function KoppDofHandler(grid::KoppGrid, dh::DH) where DH<:DofHandler
+    @assert isclosed(dh) "DofHandler must be closed to be converted for adaptivity"
+    return KoppDofHandler(
+        dh.subdofhandlers,
+        dh.field_names,
+        [celldofs(dh, i) for i in eachindex(grid.kopp_roots)],
+        [[1] for i in eachindex(grid.kopp_roots)],
+        [[dh.cell_to_subdofhandler[i]] for i in eachindex(grid.kopp_roots)],
+        dh.closed,
+        dh.grid,
+        dh.ndofs
+    )
+end
+
+function refine!(dh::KoppDofHandler, cell_idx::Pair{Int, Int})
+    kopp_grid = dh.grid
+    # Refine the cell and topology
+    kopp_root = kopp_grid.kopp_roots[cell_idx[1]]
+    idx = kopp_root.refinement_index[]
+    cell = kopp_root.children[cell_idx[2] + 1]
+    @assert cell.isleaf "Cell must be a leaf to be refined"
+    refined_neighborhood_table = SMatrix{4,4}(
+    0,2,4,0,
+    0,0,3,1,
+    2,0,0,4,
+    1,3,0,0
+    )
+    for i in 1:4
+        push!(kopp_root.children, KoppCell(
+            i,
+            cell_idx[2],
+            ntuple(j -> 0, 4),
+            cell_idx[1],
+            ntuple( j -> refined_neighborhood_table[j, i] == 0 ? get_refined_neighbor(kopp_grid, cell.neighbors[j], FaceIndex(i,j), cell_idx[1] => idx + i) : (cell_idx[1] => (idx + refined_neighborhood_table[j,i])) , 4),
+            true,
+            false
+        ))
+        # Refine dofs
+        sdh = dh.cell_to_subdofhandler[cell_idx[1]]
+        for (ip_idx, ip) in enumerate(sdh.field_interpolations)
+            shared_dofs = get_shared_dofs(ip)
+            n_dofs = getnbasefunctions(ip) * n_components(sdh, ip_idx)
+            push!(dh.cell_dofs, shared_dofs[(i-1)*n_dofs + 1 : i*n_dofs])
+        end
+    end
+    cell.children = ntuple(i-> idx + i, 4)
+    cell.isleaf = false
+    kopp_root.refinement_index[] += 4
+
 end
