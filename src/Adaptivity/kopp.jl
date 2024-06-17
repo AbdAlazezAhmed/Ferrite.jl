@@ -30,8 +30,27 @@ for IP in (:(Lagrange{RefQuadrilateral, 1}),
             end
             return res
         end
+        # @generated function get_boundary_dofs(::$IP)
+        #     ref = reference_coordinates($IP())
+        #     j = length(ref) + 1
+        #     res = Tuple{Int, Int}[]
+        #     for i in 1:4
+        #         for x in transform_refined.(Ref($IP()), reference_coordinates($IP()), i)
+        #             temp = findfirst(u -> x ≈ u, unique(ref))
+        #             if temp === nothing
+        #                 push!(res,  j)
+        #                 j+=1
+        #             else
+        #                 push!(res,  temp)
+        #             end
+        #             push!(ref, x)
+        #         end
+        #     end
+        #     return res
+        # end
     end
 end
+
 
 mutable struct KoppCell <: AbstractCell{AbstractRefShape{2}}
     secquence::Int # TODO: use two integers instead? alloc == bad
@@ -177,8 +196,6 @@ struct KoppDofHandler{dim,G<:AbstractGrid{dim}} <: AbstractDofHandler
     closed::ScalarWrapper{Bool}
     grid::G
     ndofs::ScalarWrapper{Int}
-    n_refinement_dofs::Vector{Tuple{Int, Int}} # n_unshared_dofs, n_(new)shared_dofs
-    refinement_start_idx::Vector{Int}
 end
 # function KoppDofHandler(grid::KoppGrid)
 #     dh = DofHandler(grid.base_grid)
@@ -198,7 +215,8 @@ function KoppDofHandler(grid::KoppGrid, dh::DH) where DH<:DofHandler
     return KoppDofHandler(
         dh.subdofhandlers,
         dh.field_names,
-        [celldofs(dh, i) for i in eachindex(grid.kopp_roots)],
+        # [celldofs(dh, i) for i in eachindex(grid.kopp_roots)],
+        [[j for j in eachindex(celldofs(dh, i))] for i in eachindex(grid.kopp_roots)],
         [[1] for i in eachindex(grid.kopp_roots)],
         [[dh.cell_to_subdofhandler[i]] for i in eachindex(grid.kopp_roots)],
         dh.closed,
@@ -207,8 +225,13 @@ function KoppDofHandler(grid::KoppGrid, dh::DH) where DH<:DofHandler
     )
 end
 
-function refine!(dh::KoppDofHandler, cell_idx::Pair{Int, Int})
-    kopp_grid = dh.grid
+function celldofs(dh::KoppDofHandler, cell_idx::Pair{Int, Int})
+    sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx[1]][1]]
+    start_dof = dh.cell_dofs_offset[cell_idx[1]][cell_idx[2] + 1]
+    dh.cell_dofs[cell_idx[1]][start_dof:start_dof + sdh.ndofs_per_cell[]-1]
+end
+
+function refine!(kopp_grid::KoppGrid, dh::KoppDofHandler, cell_idx::Pair{Int, Int})
     # Refine the cell and topology
     kopp_root = kopp_grid.kopp_roots[cell_idx[1]]
     idx = kopp_root.refinement_index[]
@@ -230,12 +253,18 @@ function refine!(dh::KoppDofHandler, cell_idx::Pair{Int, Int})
             true,
             false
         ))
+        j = 1
         # Refine dofs
-        sdh = dh.cell_to_subdofhandler[cell_idx[1]]
+        maxdof = maximum(dh.cell_dofs[cell_idx[1]])
+        push!(dh.cell_dofs_offset[cell_idx[1]], length(dh.cell_dofs[cell_idx[1]]) + 1)
+        sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx[1]][1]]
         for (ip_idx, ip) in enumerate(sdh.field_interpolations)
-            shared_dofs = get_shared_dofs(ip)
             n_dofs = getnbasefunctions(ip) * n_components(sdh, ip_idx)
-            push!(dh.cell_dofs, shared_dofs[(i-1)*n_dofs + 1 : i*n_dofs])
+            shared_dofs = get_shared_dofs(ip)[(i-1)*n_dofs + 1 : i*n_dofs]
+            for dof in shared_dofs
+                push!(dh.cell_dofs[cell_idx[1]], dof > n_dofs ? maxdof + j : celldofs(dh, cell_idx)[dof])
+                dof > n_dofs && (j += 1)
+            end
         end
     end
     cell.children = ntuple(i-> idx + i, 4)

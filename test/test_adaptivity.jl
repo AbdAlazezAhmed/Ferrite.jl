@@ -28,7 +28,7 @@
         qr = QuadratureRule{RefQuadrilateral}(2)
         cellvalues = CellValues(qr, ip); 
         @testset "Single SubDofHandler" begin
-            dh = DofHandler(grid)
+            dh = DofHandler(grid.base_grid)
             add!(dh, :u, ip)
             close!(dh);
         end
