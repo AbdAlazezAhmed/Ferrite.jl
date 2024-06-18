@@ -2,11 +2,17 @@ abstract type AbstractAdaptiveGrid{dim} <: AbstractGrid{dim} end
 abstract type AbstractAdaptiveCell{refshape <: AbstractRefShape} <: AbstractCell{refshape} end
 const refinable_interpolations = [
     Lagrange
+    DiscontinuousLagrange
 ]
 function transform_refined(::Lagrange{RefQuadrilateral}, coord::Vec, i::Int)
     displacements = (Vec((-0.5,-0.5)),Vec((0.5,-0.5)),Vec((0.5,0.5)),Vec((-0.5,0.5)))
     return coord/2 + displacements[i]
 end
+
+function transform_refined(coord::Vector{<:Vec}, i::Int)
+    return [(coord[i]+ coord[j])/2 for j in 1:4]
+end
+
 for IP in (:(Lagrange{RefQuadrilateral, 1}),
     :(Lagrange{RefQuadrilateral, 2}),
     :(Lagrange{RefQuadrilateral, 3}),
@@ -51,7 +57,6 @@ for IP in (:(Lagrange{RefQuadrilateral, 1}),
     end
 end
 
-
 mutable struct KoppCell <: AbstractCell{AbstractRefShape{2}}
     secquence::Int # TODO: use two integers instead? alloc == bad
     parent::Int
@@ -82,6 +87,38 @@ mutable struct KoppGrid{G}
     base_grid::G
     kopp_roots::Vector{KoppRoot}
 end
+
+function materialize(kopp_grid::KoppGrid)
+    #This is bad, just for viz now
+    base_grid = kopp_grid.base_grid
+    nodes = copy(base_grid.nodes)
+    cells = copy(base_grid.cells)
+    for (i, cell) in enumerate(base_grid.cells)
+        j = 1
+        for leaf in kopp_grid.kopp_roots[i].children
+            leaf.isleaf && leaf.parent != -1 || continue
+            coords = nodes[[cell.nodes...]]
+            parent = leaf
+            seq = Int[]
+            while true # Not HALAL
+                parent_idx = parent.parent
+                parent_idx == -1 && break
+                push!(seq, parent.secquence)
+                parent = kopp_grid.kopp_roots[i].children[parent_idx + 1]
+            end
+            for k in length(seq):-1:1
+                coords = Node.(transform_refined([coord.x for coord in coords], seq[k]))
+            end
+            l = length(nodes)
+            append!(nodes, coords)
+            push!(cells, Quadrilateral(ntuple(x -> l + x, 4)))
+            j+=1
+        end
+    end
+    Grid(cells, nodes)
+    #TODO: check for duplicate nodes
+end
+
 
 struct KoppCellCache{dim,X,G<:AbstractGrid,DH<:Union{AbstractDofHandler,Nothing}}
     flags::UpdateFlags

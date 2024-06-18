@@ -158,6 +158,6 @@ include("PointEvalHandler.jl")
 # Other
 include("deprecations.jl")
 include("docs.jl")
-include("Adaptivity/kopp.jl")
+include("Adaptivity/dgkopp.jl")
 
 end # module
