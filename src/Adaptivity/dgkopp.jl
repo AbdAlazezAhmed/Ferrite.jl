@@ -9,7 +9,7 @@ struct DGKoppRoot{M <: AbstractMatrix}
     children::Vector{DGKoppCell}
     cell_matrices::Vector{M}
     interface_matrices::Vector{M}
-    refinement_order::Vector{Int}
+    refinement_order::Vector{Int} #TODO: replace with Vecotr{Bool}
     children_updated_indices::Vector{Int}
 end
 
@@ -158,6 +158,7 @@ function refine!(grid::DGKoppGrid)
                         Int[]
                     )
                 end
+                #TODO: modify the parent cell to be cell 1 in refinement
             end
             old_cell_idx += 1
         end
