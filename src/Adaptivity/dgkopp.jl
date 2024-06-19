@@ -66,7 +66,8 @@ function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
     end
 end
 
-function get_inherited_neighbors(grid::DGKoppGrid, parent::DGKoppCell, face::FaceIndex)
+function get_inherited_neighbors(grid::DGKoppGrid, parent_cell_idx::Pair{Int, Int}, face::FaceIndex)
+    parent = grid.kopp_roots[parent_cell_idx[1]].children[parent_cell_idx[2]]
     neighbors = Pair{Int, Int}[]
     local_seq = face[1]
     local_face = face[2]
@@ -77,37 +78,50 @@ function get_inherited_neighbors(grid::DGKoppGrid, parent::DGKoppCell, face::Fac
         0,0,1,3
         )
     neighbor_child_face_map = SMatrix{4,2}(
-    4,3,
-    1,4,
-    2,1,
-    3,2
+        4,3,4,1,
+        2,1,2,3
     )
     for neighbor_idx in parent.neighbors[local_face]
         neighbor_root = grid.kopp_roots[neighbor_idx[1]]
         neighbor = neighbor_root.children[neighbor_idx[2]]
-        if !isempty(neighbor.secquence)
-            if length(neighbor.secquence) > length(parent.secquence)
-                if neighbor.secquence[length(parent.secquence) + 1] == refined_neighborhood_table[local_seq, local_face]
-                    if neighbor_root.refinement_order[neighbor_idx[2]] == 0
+        if neighbor_root.refinement_order[neighbor_idx[2]] == 0
+            if !isempty(neighbor.secquence)
+                if length(neighbor.secquence) > length(parent.secquence)
+                    if neighbor.secquence[length(parent.secquence) + 1] == refined_neighborhood_table[local_face, local_seq]
                         push!(neighbors, neighbor_idx)
-                    else # The parent neighbor is marked for refinement 
-                        for i in 1:2
-                            push!(neighbors, neighbor_idx[1] => neighbor_idx[2] + neighbor_child_face_map[i,local_face])
-                        end
                     end
+                else
+                    push!(neighbors, neighbor_idx) #Should be the only neighbor?
                 end
             else
                 push!(neighbors, neighbor_idx) #Should be the only neighbor?
             end
-        else
-            push!(neighbors, neighbor_idx) #Should be the only neighbor?
+            correct_neighbors_neighbors!(grid, parent_cell_idx[1] => parent_cell_idx[2] + face[1] - 1, neighbors, face)
+        else # The parent neighbor is marked for refinement 
+            if length(neighbor.secquence) > length(parent.secquence)
+                if neighbor.secquence[length(parent.secquence) + 1] == refined_neighborhood_table[local_face, local_seq]
+                    for i in 1:2
+                        push!(neighbors, neighbor_idx[1] => neighbor_idx[2] + neighbor_child_face_map[local_seq, i] - 1)
+                    end
+                end
+            elseif length(neighbor.secquence) == length(parent.secquence)
+                push!(neighbors, neighbor_idx[1] => neighbor_idx[2] + refined_neighborhood_table[face[2], local_seq] - 1)
+            end
         end
     end
     return neighbors
 end
 
-function correct_neighbors_neighbors!(grid::DGKoppGrid, cell::Pair{Int, Int})
-    
+function correct_neighbors_neighbors!(grid::DGKoppGrid, cell::Pair{Int, Int}, neighbors::Vector{Pair{Int, Int}}, face::FaceIndex)
+    face_face_neighbor_local = (3,4,1,2)
+    for neighbor_idx in neighbors
+        neighbor_root = grid.kopp_roots[neighbor_idx[1]]
+        neighbor_root.refinement_order[neighbor_idx[2]] != 0 && continue
+        neighbor_cell = neighbor_root.children[neighbor_idx[2]]
+        neighbor_face = face_face_neighbor_local[face[2]]
+        filter!(x -> x != (cell[1] => cell[2] - face[1] + 1), neighbor_cell.neighbors[neighbor_face])
+        push!(neighbor_cell.neighbors[neighbor_face], cell)
+    end
 end
 
 function get_neighboring_cells(grid::DGKoppGrid, parent_cell_idx::Pair{Int, Int}, face::FaceIndex)
@@ -120,13 +134,12 @@ function get_neighboring_cells(grid::DGKoppGrid, parent_cell_idx::Pair{Int, Int}
     1,3,0,0
     )
     if  refined_neighborhood_table[face[2],face[1]] == 0
-        neighbors = get_inherited_neighbors(grid, parent, face)
-        correct_neighbors_neighbors!(grid, cell)
-        neighbors
+        neighbors = get_inherited_neighbors(grid, parent_cell_idx, face)
+        return neighbors
     elseif  refined_neighborhood_table[face[2],face[1]] == 1
-        [parent_cell_idx]
+        return [parent_cell_idx]
     else
-        [parent_cell_idx[1] => parent_cell_idx[2] + refined_neighborhood_table[face[2],face[1]] - 1]
+        return [parent_cell_idx[1] => parent_cell_idx[2] + refined_neighborhood_table[face[2],face[1]] - 1]
     end
 end
 
