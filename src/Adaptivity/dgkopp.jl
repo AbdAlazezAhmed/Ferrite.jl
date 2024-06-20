@@ -54,6 +54,7 @@ function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
         temp = deepcopy(root.children)
         l = length(root.children)+3*k
         resize!(root.children, l)
+        resize!(root.cell_matrices, l)
         root.children .= similar(temp, l)
         for (old, new) in enumerate(root.children_updated_indices)
             root.children[new] = deepcopy(temp[old])
@@ -96,7 +97,6 @@ function get_inherited_neighbors(grid::DGKoppGrid, parent_cell_idx::Pair{Int, In
             else
                 push!(neighbors, neighbor_idx) #Should be the only neighbor?
             end
-            correct_neighbors_neighbors!(grid, parent_cell_idx[1] => parent_cell_idx[2] + face[1] - 1, neighbors, face)
         else # The parent neighbor is marked for refinement 
             if length(neighbor.secquence) > length(parent.secquence)
                 if neighbor.secquence[length(parent.secquence) + 1] == refined_neighborhood_table[local_face, local_seq]
@@ -116,6 +116,7 @@ function correct_neighbors_neighbors!(grid::DGKoppGrid, cell::Pair{Int, Int}, ne
     face_face_neighbor_local = (3,4,1,2)
     for neighbor_idx in neighbors
         neighbor_root = grid.kopp_roots[neighbor_idx[1]]
+        isassigned(neighbor_root.refinement_order, neighbor_idx[2]) || continue
         neighbor_root.refinement_order[neighbor_idx[2]] != 0 && continue
         neighbor_cell = neighbor_root.children[neighbor_idx[2]]
         neighbor_face = face_face_neighbor_local[face[2]]
@@ -157,7 +158,6 @@ function refine!(grid::DGKoppGrid)
     end
     current_cell_idx = 1
     for root_idx in eachindex(grid.kopp_roots)
-        # Threads.@threads for root_idx in eachindex(grid.kopp_roots)
         root = grid.kopp_roots[root_idx]
         old_cell_idx = 1
         for new_cell_idx in root.children_updated_indices
@@ -165,6 +165,9 @@ function refine!(grid::DGKoppGrid)
             if root.refinement_order[old_cell_idx] != 0
                 for _i in 1:4
                     neighborhood = neighborhoods[current_cell_idx]
+                    for k in eachindex(neighborhood)
+                        correct_neighbors_neighbors!(grid, root_idx => new_cell_idx + _i - 1, neighborhood[k], FaceIndex(_i, k))
+                    end
                     root.children[new_cell_idx + _i - 1] = DGKoppCell(
                         [_i],
                         neighborhood,
@@ -173,9 +176,50 @@ function refine!(grid::DGKoppGrid)
                     )
                     current_cell_idx += 1
                 end
-                #TODO: modify the parent cell to be cell 1 in refinement
             end
             old_cell_idx += 1
         end
     end
+end
+
+function transform_refined(coord::NTuple{4, <:Vec}, i::Int)
+    return ntuple(j -> (coord[i]+ coord[j])/2, 4)
+end
+
+function get_coords(grid::DGKoppGrid, cell_idx::Pair{Int, Int})
+    root = grid.kopp_roots[cell_idx[1]]
+    cell = root.children[cell_idx[2]]
+    nodes_idx = grid.base_grid.cells[cell_idx[1]].nodes
+    coords = ntuple(i -> grid.base_grid.nodes[nodes_idx[i]].x, 4)
+    for k in length(cell.secquence):-1:1
+        coords = transform_refined(coords, cell.secquence[k])
+    end
+    return coords
+end
+
+function assemble_element_matrix!(ip::DiscontinuousLagrange, qr::QuadratureRule, grid::DGKoppGrid, cell::Pair{Int, Int})
+    root = grid.kopp_roots[cell[1]]
+    n_basefuncs = getnbasefunctions(ip)
+    if !isassigned(root.cell_matrices, cell[2])
+        root.cell_matrices[cell[2]] = zeros(n_basefuncs, n_basefuncs)
+    else
+        fill!(root.cell_matrices[cell[2]], 0)
+    end
+    Ke = root.cell_matrices[cell[2]]
+    geo_mapping = GeometryMapping{1}(Float64, ip, qr)
+    x = get_coords(grid, cell)
+    for q_point in 1:getnquadpoints(qr)
+        ξ = qr.points[q_point]
+        J = calculate_mapping(geo_mapping, q_point, x).J
+        w = qr.weights[q_point]
+        dΩ = calculate_detJ(J) * w
+        for i in 1:n_basefuncs
+            δu  = shape_value(ip, ξ, i)
+            for j in 1:n_basefuncs
+                u = shape_value(ip, ξ, i)
+                Ke[i, j] += (δu ⋅ u) * dΩ
+            end
+        end
+    end
+    return Ke
 end
