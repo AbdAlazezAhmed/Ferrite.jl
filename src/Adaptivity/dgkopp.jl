@@ -13,15 +13,15 @@ struct DGKoppRoot{M <: AbstractMatrix}
     children_updated_indices::Vector{Int}
 end
 
-struct DGKoppGrid{G}
+struct DGKoppGrid{G, M <: AbstractMatrix}
     base_grid::G
-    kopp_roots::Vector{DGKoppRoot}
+    kopp_roots::Vector{DGKoppRoot{M}}
 end
 
 function generate_grid(C::Type{DGKoppCell}, nel::NTuple{2,Int}) where {T}
     grid =  generate_grid(Quadrilateral, nel)
     topology = ExclusiveTopology(grid)
-    cells = DGKoppRoot[]
+    cells = DGKoppRoot{Matrix{Float64}}[]
     for cell in 1:getncells(grid)
         neighborhood = tuple([isempty(face) ? Pair{Int, Int}[] : [face[1][1] => 1] for face in @view topology.edge_edge_neighbor[cell, :]]...)
         push!(cells, Ferrite.DGKoppRoot(DGKoppCell[
@@ -197,7 +197,36 @@ function get_coords(grid::DGKoppGrid, cell_idx::Pair{Int, Int})
     return coords
 end
 
+# 2 allocs for J?
 function assemble_element_matrix!(ip::DiscontinuousLagrange, qr::QuadratureRule, grid::DGKoppGrid, cell::Pair{Int, Int})
+    root = grid.kopp_roots[cell[1]]
+    n_basefuncs = getnbasefunctions(ip)
+    if !isassigned(root.cell_matrices, cell[2])
+        root.cell_matrices[cell[2]] = zeros(n_basefuncs, n_basefuncs)
+    else
+        fill!(root.cell_matrices[cell[2]], 0)
+    end
+    Ke = root.cell_matrices[cell[2]]
+    geo_mapping = GeometryMapping{1}(Float64, ip, qr)
+    x = get_coords(grid, cell)
+    for q_point in 1:getnquadpoints(qr)
+        ξ = qr.points[q_point]
+        J = calculate_mapping(geo_mapping, q_point, x).J
+        w = qr.weights[q_point]
+        dΩ = calculate_detJ(J) * w
+        for i in 1:n_basefuncs
+            δu  = shape_value(ip, ξ, i)
+            for j in 1:n_basefuncs
+                u = shape_value(ip, ξ, i)
+                Ke[i, j] += (δu ⋅ u) * dΩ
+            end
+        end
+    end
+    return Ke
+end
+
+
+function assemble_interface_matrix!(ip::DiscontinuousLagrange, qr::QuadratureRule, grid::DGKoppGrid, cell::Pair{Int, Int})
     root = grid.kopp_roots[cell[1]]
     n_basefuncs = getnbasefunctions(ip)
     if !isassigned(root.cell_matrices, cell[2])
