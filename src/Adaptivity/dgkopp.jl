@@ -144,19 +144,34 @@ function get_neighboring_cells(grid::DGKoppGrid, parent_cell_idx::Pair{Int, Int}
 end
 
 function refine!(grid::DGKoppGrid)
-    for (root_idx, root) in enumerate(grid.kopp_roots)
+    neighborhoods = NTuple{4, Vector{Pair{Int, Int}}}[]
+    for root_idx in eachindex(grid.kopp_roots)
+        root = grid.kopp_roots[root_idx]
+        for new_cell_idx in root.children_updated_indices
+            isassigned(root.children, new_cell_idx) || continue
+            for _i in 1:4
+                neighborhood = ntuple(k -> get_neighboring_cells(grid, root_idx=>new_cell_idx, FaceIndex(_i, k)), 4)
+                push!(neighborhoods, neighborhood)
+            end
+        end
+    end
+    current_cell_idx = 1
+    for root_idx in eachindex(grid.kopp_roots)
+        # Threads.@threads for root_idx in eachindex(grid.kopp_roots)
+        root = grid.kopp_roots[root_idx]
         old_cell_idx = 1
         for new_cell_idx in root.children_updated_indices
             isassigned(root.children, new_cell_idx) || continue
             if root.refinement_order[old_cell_idx] != 0
-                for _i in 2:4
-                    neighborhood = ntuple(k -> get_neighboring_cells(grid, root_idx=>new_cell_idx, FaceIndex(_i, k)), 4)
+                for _i in 1:4
+                    neighborhood = neighborhoods[current_cell_idx]
                     root.children[new_cell_idx + _i - 1] = DGKoppCell(
                         [_i],
                         neighborhood,
                         (Pair{Int, Int}[], Pair{Int, Int}[], Pair{Int, Int}[], Pair{Int, Int}[]),
                         Int[]
                     )
+                    current_cell_idx += 1
                 end
                 #TODO: modify the parent cell to be cell 1 in refinement
             end
