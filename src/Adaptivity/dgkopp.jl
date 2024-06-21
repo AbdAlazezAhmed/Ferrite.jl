@@ -308,32 +308,60 @@ function assemble_interface_matrix!(ip::DiscontinuousLagrange, qr::FacetQuadratu
     root = grid.kopp_roots[cell_idx[1]]
     cell = root.children[cell_idx[2]]
     n_basefuncs = getnbasefunctions(ip)
-    for (i, face) in enumerate(cell.interface_matrix_index)
-        if cell.neighbors[i]
-        
+    for (i, i_matrix) in enumerate(cell.interface_matrix_index[face])
+        if cell.neighbors[face] |> isempty
+            return nothing
+        else
+            neighbor_idx = cell.neighbors[face][i]
+            neighbor_root = grid.kopp_roots[neighbor_idx.root]
+            neighbor_cell = neighbor_root.children[neighbor_idx.child]
+            cell_a = length(neighbor_cell.secquence) > length(cell.secquence) ? cell : neighbor_cell
+            cell_a_idx = length(neighbor_cell.secquence) > length(cell.secquence) ? cell_idx : (neighbor_idx.root => neighbor_idx.child)
+            cell_b = length(neighbor_cell.secquence) > length(cell.secquence) ? neighbor_cell : cell
+            cell_b_idx = length(neighbor_cell.secquence) > length(cell.secquence) ? (neighbor_idx.root => neighbor_idx.child) : cell_idx
+            face_a = length(neighbor_cell.secquence) > length(cell.secquence) ? face : neighbor_idx.neighbor_face
+            face_b = length(neighbor_cell.secquence) > length(cell.secquence) ? neighbor_idx.neighbor_face : face
+
+            OI_a = grid.root_face_orientation_info[cell_a_idx[1]][face_a]
+            OI_b = grid.root_face_orientation_info[cell_b_idx[1]][face_b]
+            flipped = OI_a.flipped != OI_b.flipped
+            shift_index = OI_b.shift_index - OI_a.shift_index
+            IOI = InterfaceOrientationInfo{RefQuadrilateral, RefQuadrilateral}(flipped, shift_index, OI_b.shift_index, face_a, face_b)
+
+            if !isassigned(grid.interface_matrices, i_matrix)
+                grid.interface_matrices[i_matrix] = zeros(2*n_basefuncs, 2*n_basefuncs)
+            else
+                fill!(grid.interface_matrices[i_matrix], 0.0)
+            end
+            Ki = grid.interface_matrices[i_matrix]
+            geo_mapping_a = GeometryMapping{1}(Float64, ip, qr.face_rules[face_a])
+            geo_mapping_b = GeometryMapping{1}(Float64, ip, qr.face_rules[face_b])
+            x_a = get_coords(grid, cell_idx)
+            x_b = get_coords(grid, neighbor_idx.root => neighbor_idx.child)
+            transform_interface_points!
+            for q_point in 1:getnquadpoints(qr.face_rules[face_a])
+                ξₐ = qr.face_rules[face_a].points[q_point]
+                face_point = element_to_facet_transformation(ξₐ, RefQuadrilateral, face_a)
+                flipped && (face_point *= -1)
+                ξᵦ = facet_to_element_transformation(face_point, RefQuadrilateral, face_b)
+                Jₐ = calculate_mapping(geo_mapping_a, q_point, x_a).J
+                Jᵦ = calculate_mapping(geo_mapping_b, q_point, x_b).J
+                w_a = qr.face_rules[face_a].weights[q_point]
+                w_b = qr.face_rules[face_b].weights[q_point]
+                
+                dΩₐ = calculate_detJ(Jₐ) * w_a
+                dΩᵦ = calculate_detJ(Jᵦ) * w_b
+                for i in 1:n_basefuncs 
+                    δu  = shape_gradient(ip, ξₐ, i)
+                    for j in 1:n_basefuncs 
+                        u = shape_gradient(ip, ξₐ, i)
+                        Ki[i, j] += (δu ⋅ u) * dΩₐ
+                    end
+                end
+            end
+            return Ki
         end
     end
    
-    if !isassigned(grid.interface_matrices, cell.interface_matrix_index[])
-        root.cell_matrices[cell[2]] = zeros(n_basefuncs, n_basefuncs)
-    else
-        fill!(root.cell_matrices[cell[2]], 0)
-    end
-    Ke = root.cell_matrices[cell[2]]
-    geo_mapping = GeometryMapping{1}(Float64, ip, qr)
-    x = get_coords(grid, cell)
-    for q_point in 1:getnquadpoints(qr)
-        ξ = qr.points[q_point]
-        J = calculate_mapping(geo_mapping, q_point, x).J
-        w = qr.weights[q_point]
-        dΩ = calculate_detJ(J) * w
-        for i in 1:n_basefuncs
-            δu  = shape_value(ip, ξ, i)
-            for j in 1:n_basefuncs
-                u = shape_value(ip, ξ, i)
-                Ke[i, j] += (δu ⋅ u) * dΩ
-            end
-        end
-    end
-    return Ke
+   
 end
