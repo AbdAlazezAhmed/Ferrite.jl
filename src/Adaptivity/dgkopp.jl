@@ -1,6 +1,12 @@
+struct NeighborIndex
+    root::Int
+    child::Int
+    neighbor_face::Int
+end
+
 struct DGKoppCell
     secquence::Vector{Int}
-    neighbors::NTuple{4, Vector{Pair{Int, Int}}}
+    neighbors::NTuple{4, Vector{NeighborIndex}}
     interface_matrix_index::NTuple{4, Vector{Pair{Int, Int}}}
     dofs::Vector{Int} #predetermined size
 end
@@ -16,14 +22,19 @@ end
 struct DGKoppGrid{G, M <: AbstractMatrix}
     base_grid::G
     kopp_roots::Vector{DGKoppRoot{M}}
+    root_face_orientation_info::Vector{NTuple{4, OrientationInfo}}
 end
 
 function generate_grid(C::Type{DGKoppCell}, nel::NTuple{2,Int}) where {T}
     grid =  generate_grid(Quadrilateral, nel)
+    return DGKoppGrid(grid)
+end
+
+function DGKoppGrid(grid::G) where {G <: AbstractGrid}
     topology = ExclusiveTopology(grid)
     cells = DGKoppRoot{Matrix{Float64}}[]
     for cell in 1:getncells(grid)
-        neighborhood = tuple([isempty(face) ? Pair{Int, Int}[] : [face[1][1] => 1] for face in @view topology.edge_edge_neighbor[cell, :]]...)
+        neighborhood = tuple([isempty(face) ? NeighborIndex[] : [NeighborIndex(face[1][1], 1, face[1][2])] for face in @view topology.edge_edge_neighbor[cell, :]]...)
         push!(cells, Ferrite.DGKoppRoot(DGKoppCell[
             DGKoppCell(
             Int[],
@@ -37,7 +48,8 @@ function generate_grid(C::Type{DGKoppCell}, nel::NTuple{2,Int}) where {T}
         zeros(Int, 1),
         [1]))
     end
-    return Ferrite.DGKoppGrid(grid, cells)
+    orientation = [ntuple(i -> OrientationInfo(facets(cell)[i]), 4) for cell in grid.cells]
+    return Ferrite.DGKoppGrid(grid, cells, orientation)
 end
 
 function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
@@ -60,7 +72,7 @@ function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
             root.children[new] = deepcopy(temp[old])
             for j in 1:4
                 for (neighbor_idx, neighbor) in enumerate(root.children[new].neighbors[j])
-                    root.children[new].neighbors[j][neighbor_idx] = neighbor[1] => grid.kopp_roots[neighbor[1]].children_updated_indices[neighbor[2]]
+                    root.children[new].neighbors[j][neighbor_idx] = NeighborIndex(neighbor.root, grid.kopp_roots[neighbor.root].children_updated_indices[neighbor.child], neighbor.neighbor_face)
                 end
             end
         end
@@ -72,12 +84,31 @@ function get_inherited_neighbors(grid::DGKoppGrid, parent_cell_idx::Pair{Int, In
     neighbors = Pair{Int, Int}[]
     local_seq = face[1]
     local_face = face[2]
-    refined_neighborhood_table = SMatrix{4,4}(
-        4,0,0,2,
-        3,1,0,0,
-        0,4,2,0,
-        0,0,1,3
+    refined_neighborhood_table = (
+        SMatrix{4,4}([4 0 0 2
+        3 1 0 0
+        0 4 2 0
+        0 0 1 3]),
+
+        SMatrix{4,4}([3 0 0 1
+        2 4 0 0
+        0 3 1 0
+        0 0 4 2]),
+
+        SMatrix{4,4}([2 0 0 4
+        1 3 0 0
+        0 2 4 0
+        0 0 3 1]),
+
+        SMatrix{4,4}([1 0 0 3
+        4 2 0 0
+        0 1 3 0
+        0 0 2 4])
+
         )
+
+        
+    _flipped = (3,4,1,2)
     neighbor_child_face_map = SMatrix{4,2}(
         4,3,4,1,
         2,1,2,3
@@ -88,7 +119,13 @@ function get_inherited_neighbors(grid::DGKoppGrid, parent_cell_idx::Pair{Int, In
         if neighbor_root.refinement_order[neighbor_idx[2]] == 0
             if !isempty(neighbor.secquence)
                 if length(neighbor.secquence) > length(parent.secquence)
-                    if neighbor.secquence[length(parent.secquence) + 1] == refined_neighborhood_table[local_face, local_seq]
+                    neighbor_seq = neighbor.secquence[length(parent.secquence) + 1]
+                    idx = neighbor_idx.neighbor_face
+                    if eighbor_idx[1] == parent_cell_idx[1]
+                        flipped = grid.root_face_orientation_info[neighbor_idx.root] == grid.root_face_orientation_info[parent_cell_idx[1]]
+                        idx = flipped ? _flipped[neighbor_idx.neighbor_face] : idx
+                    end
+                    if neighbor_seq == refined_neighborhood_table[idx][local_seq, local_face]
                         push!(neighbors, neighbor_idx)
                     end
                 else
@@ -99,13 +136,13 @@ function get_inherited_neighbors(grid::DGKoppGrid, parent_cell_idx::Pair{Int, In
             end
         else # The parent neighbor is marked for refinement 
             if length(neighbor.secquence) > length(parent.secquence)
-                if neighbor.secquence[length(parent.secquence) + 1] == refined_neighborhood_table[local_face, local_seq]
+                if neighbor.secquence[length(parent.secquence) + 1] == refined_neighborhood_table[local_seq, local_face]
                     for i in 1:2
                         push!(neighbors, neighbor_idx[1] => neighbor_idx[2] + neighbor_child_face_map[local_seq, i] - 1)
                     end
                 end
             elseif length(neighbor.secquence) == length(parent.secquence)
-                push!(neighbors, neighbor_idx[1] => neighbor_idx[2] + refined_neighborhood_table[face[2], local_seq] - 1)
+                push!(neighbors, neighbor_idx[1] => neighbor_idx[2] + refined_neighborhood_table[local_seq, local_face] - 1)
             end
         end
     end
@@ -182,6 +219,7 @@ function refine!(grid::DGKoppGrid)
     end
 end
 
+# Works only for 1st order geometric interpolation
 function transform_refined(coord::NTuple{4, <:Vec}, i::Int)
     return ntuple(j -> (coord[i]+ coord[j])/2, 4)
 end
