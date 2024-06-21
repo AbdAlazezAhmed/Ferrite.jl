@@ -15,7 +15,7 @@ struct DGKoppRoot{M <: AbstractMatrix}
     children::Vector{DGKoppCell}
     cell_matrices::Vector{M}
     refinement_order::Vector{Int} #TODO: replace with Vecotr{Bool}
-    children_updated_indices::Vector{Int}
+    children_updated_indices::Vector{Int} #TODO: remove?
 end
 
 struct DGKoppGrid{G, M <: AbstractMatrix}
@@ -23,6 +23,8 @@ struct DGKoppGrid{G, M <: AbstractMatrix}
     kopp_roots::Vector{DGKoppRoot{M}}
     interface_matrices::Vector{M}
     root_face_orientation_info::Vector{NTuple{4, OrientationInfo}}
+    interfaces_updated_indices::Vector{Int} #TODO: remove?
+    interfaces_recompute::BitVector
 end
 
 function generate_grid(C::Type{DGKoppCell}, nel::NTuple{2,Int}) where {T}
@@ -57,18 +59,34 @@ function DGKoppGrid(grid::G) where {G <: AbstractGrid}
         push!(cells[neighbor.root].children[neighbor.child].interface_matrix_index[neighbor.neighbor_face], i)
     end
     orientation = [ntuple(i -> OrientationInfo(facets(cell)[i]), 4) for cell in grid.cells]
-    return Ferrite.DGKoppGrid(grid, cells, interface_matrices, orientation)
+    return Ferrite.DGKoppGrid(grid, cells, interface_matrices, orientation, collect(1:length(interface_matrices)), falses(length(interface_matrices)))
 end
 
 function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
     @assert all([all(root.refinement_order .== 0) for root in grid.kopp_roots]) "Grid must have no marked for refinement cells before marking for refinement"
+    refined_interfaces = Int[]
     for (i, root) in enumerate(grid.kopp_roots)
         k = 0
+        k_i = 0
         for (j, cell) in enumerate(root.children)
             if (i => j) ∈ cellset
-                k+=1
+                k += 1
+                k_i += 1
                 root.refinement_order[j] = k
                 root.children_updated_indices[j+1:end] .+= 3
+                last_iterated_interface = 0
+                for face in cell.interface_matrix_index
+                    for interface in face
+                        interface ∈ refined_interfaces && continue
+                        grid.interfaces_recompute[interface:interface + 1] .= true
+                        grid.interfaces_updated_indices[interface+1:end] .+=1
+                        last_iterated_interface = interface
+                        push!(refined_interfaces, interface)
+                    end
+                end
+                if last_iterated_interface != 0
+                    grid.interfaces_updated_indices[last_iterated_interface+1:end] .+=4
+                end
             end
         end
         temp = deepcopy(root.children)
@@ -85,6 +103,9 @@ function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
             end
         end
     end
+    resize!(grid.interface_matrices, length(grid.interface_matrices) + length(refined_interfaces) + 4*length(cellset))
+
+    return nothing
 end
 
 function get_inherited_neighbors(grid::DGKoppGrid, parent_cell_idx::Pair{Int, Int}, face::FaceIndex)
@@ -283,10 +304,17 @@ function assemble_element_matrix!(ip::DiscontinuousLagrange, qr::QuadratureRule,
 end
 
 
-function assemble_interface_matrix!(ip::DiscontinuousLagrange, qr::FacetQuadratureRule, grid::DGKoppGrid, cell::Pair{Int, Int})
-    root = grid.kopp_roots[cell[1]]
+function assemble_interface_matrix!(ip::DiscontinuousLagrange, qr::FacetQuadratureRule, grid::DGKoppGrid, cell_idx::Pair{Int, Int}, face::Int)
+    root = grid.kopp_roots[cell_idx[1]]
+    cell = root.children[cell_idx[2]]
     n_basefuncs = getnbasefunctions(ip)
-    if !isassigned(root.cell_matrices, cell[2])
+    for (i, face) in enumerate(cell.interface_matrix_index)
+        if cell.neighbors[i]
+        
+        end
+    end
+   
+    if !isassigned(grid.interface_matrices, cell.interface_matrix_index[])
         root.cell_matrices[cell[2]] = zeros(n_basefuncs, n_basefuncs)
     else
         fill!(root.cell_matrices[cell[2]], 0)
