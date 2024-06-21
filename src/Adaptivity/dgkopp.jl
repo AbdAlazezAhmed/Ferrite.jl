@@ -346,16 +346,27 @@ function assemble_interface_matrix!(ip::DiscontinuousLagrange, qr::FacetQuadratu
                 ξᵦ = facet_to_element_transformation(face_point, RefQuadrilateral, face_b)
                 Jₐ = calculate_mapping(geo_mapping_a, q_point, x_a).J
                 Jᵦ = calculate_mapping(geo_mapping_b, q_point, x_b).J
-                w_a = qr.face_rules[face_a].weights[q_point]
-                w_b = qr.face_rules[face_b].weights[q_point]
-                
-                dΩₐ = calculate_detJ(Jₐ) * w_a
-                dΩᵦ = calculate_detJ(Jᵦ) * w_b
-                for i in 1:n_basefuncs 
-                    δu  = shape_gradient(ip, ξₐ, i)
-                    for j in 1:n_basefuncs 
-                        u = shape_gradient(ip, ξₐ, i)
-                        Ki[i, j] += (δu ⋅ u) * dΩₐ
+                w = qr.face_rules[face_a].weights[q_point]
+                dΩₐ = calculate_detJ(Jₐ) * w
+                dΩᵦ = calculate_detJ(Jᵦ) * w
+                dΓ = dΩₐ
+                weight_norm = weighted_normal(Jₐ, RefQuadrilateral, face_a)
+                normal =  weight_norm / norm(weight_norm)
+                for i in 1:2*n_basefuncs
+                    ∇δu_here  = i > n_basefuncs ? shape_gradient(ip, i > n_basefuncs ? ξᵦ : ξₐ, i > n_basefuncs ? i - n_basefuncs  : i) : Vec(0.,0.)
+                    ∇δu_there  = i > n_basefuncs ? Vec(0.,0.) : shape_gradient(ip, i > n_basefuncs ? ξᵦ : ξₐ, i > n_basefuncs ? i - n_basefuncs  : i)
+                    δu_here  = i > n_basefuncs ? shape_value(ip, i > n_basefuncs ? ξᵦ : ξₐ, i > n_basefuncs ? i - n_basefuncs  : i) : 0.0
+                    δu_there  = i > n_basefuncs ? 0.0 : shape_value(ip, i > n_basefuncs ? ξᵦ : ξₐ, i > n_basefuncs ? i - n_basefuncs  : i)
+                    test_jump = (δu_here - δu_there) * normal
+                    test_grad_avg = (∇δu_here + ∇δu_there)/2
+                    for j in 1:2*n_basefuncs 
+                        ∇u_here  = j > n_basefuncs ? shape_gradient(ip, j > n_basefuncs ? ξᵦ : ξₐ, j > n_basefuncs ? j - n_basefuncs  : j) : Vec(0.,0.)
+                        ∇u_there  = j > n_basefuncs ? Vec(0.,0.) : shape_gradient(ip, j > n_basefuncs ? ξᵦ : ξₐ, j > n_basefuncs ? j - n_basefuncs  : j)
+                        u_here  = j > n_basefuncs ? shape_value(ip, j > n_basefuncs ? ξᵦ : ξₐ, j > n_basefuncs ? j - n_basefuncs  : j) : 0.0
+                        u_there  = j > n_basefuncs ? 0.0 : shape_value(ip, j > n_basefuncs ? ξᵦ : ξₐ, j > n_basefuncs ? j - n_basefuncs  : j)
+                        trial_jump = (u_here - u_there) * normal
+                        trial_grad_avg = (∇u_here + ∇u_there)/2
+                        Ki[i, j] += -(test_jump ⋅ trial_grad_avg + test_grad_avg ⋅ trial_jump) * dΓ + 1000.0 * (test_jump ⋅ trial_jump) * dΓ
                     end
                 end
             end
