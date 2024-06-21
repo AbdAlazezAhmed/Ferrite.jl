@@ -7,14 +7,13 @@ end
 struct DGKoppCell
     secquence::Vector{Int}
     neighbors::NTuple{4, Vector{NeighborIndex}}
-    interface_matrix_index::NTuple{4, Vector{Pair{Int, Int}}}
+    interface_matrix_index::NTuple{4, Vector{Int}}
     dofs::Vector{Int} #predetermined size
 end
 
 struct DGKoppRoot{M <: AbstractMatrix}
     children::Vector{DGKoppCell}
     cell_matrices::Vector{M}
-    interface_matrices::Vector{M}
     refinement_order::Vector{Int} #TODO: replace with Vecotr{Bool}
     children_updated_indices::Vector{Int}
 end
@@ -22,6 +21,7 @@ end
 struct DGKoppGrid{G, M <: AbstractMatrix}
     base_grid::G
     kopp_roots::Vector{DGKoppRoot{M}}
+    interface_matrices::Vector{M}
     root_face_orientation_info::Vector{NTuple{4, OrientationInfo}}
 end
 
@@ -39,17 +39,25 @@ function DGKoppGrid(grid::G) where {G <: AbstractGrid}
             DGKoppCell(
             Int[],
             neighborhood,
-            (Pair{Int, Int}[], Pair{Int, Int}[], Pair{Int, Int}[], Pair{Int, Int}[]),
+            (Int[], Int[], Int[], Int[]),
             Int[]        
             )
         ],
         Matrix{Float64}[],
-        Matrix{Float64}[],
         zeros(Int, 1),
         [1]))
     end
+    interface_matrices = Matrix{Float64}[]
+    resize!(interface_matrices, length(facetskeleton(topology, grid)))
+    for (i, edge) in enumerate(facetskeleton(topology, grid))
+        push!(cells[edge[1]].children[1].interface_matrix_index[edge[2]], i)
+        neighbors_vec = cells[edge[1]].children[1].neighbors[edge[2]]
+        isempty(neighbors_vec) && continue
+        neighbor = first(neighbors_vec)
+        push!(cells[neighbor.root].children[neighbor.child].interface_matrix_index[neighbor.neighbor_face], i)
+    end
     orientation = [ntuple(i -> OrientationInfo(facets(cell)[i]), 4) for cell in grid.cells]
-    return Ferrite.DGKoppGrid(grid, cells, orientation)
+    return Ferrite.DGKoppGrid(grid, cells, interface_matrices, orientation)
 end
 
 function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
@@ -275,7 +283,7 @@ function assemble_element_matrix!(ip::DiscontinuousLagrange, qr::QuadratureRule,
 end
 
 
-function assemble_interface_matrix!(ip::DiscontinuousLagrange, qr::QuadratureRule, grid::DGKoppGrid, cell::Pair{Int, Int})
+function assemble_interface_matrix!(ip::DiscontinuousLagrange, qr::FacetQuadratureRule, grid::DGKoppGrid, cell::Pair{Int, Int})
     root = grid.kopp_roots[cell[1]]
     n_basefuncs = getnbasefunctions(ip)
     if !isassigned(root.cell_matrices, cell[2])
