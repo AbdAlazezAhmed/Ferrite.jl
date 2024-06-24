@@ -8,13 +8,13 @@ struct DGKoppCell
     secquence::Vector{Int}
     neighbors::NTuple{4, Vector{NeighborIndex}}
     interface_matrix_index::NTuple{4, Vector{Int}}
-    dofs::Vector{Int} #predetermined size
 end
 
 struct DGKoppRoot{M <: AbstractMatrix}
     children::Vector{DGKoppCell}
     cell_matrices::Vector{M}
-    refinement_order::Vector{Int} #TODO: replace with Vecotr{Bool}
+    marked_for_refinement::BitVector
+    dofs::Vector{Int}
     children_updated_indices::Vector{Int} #TODO: remove?
 end
 
@@ -41,12 +41,12 @@ function DGKoppGrid(grid::G) where {G <: AbstractGrid}
             DGKoppCell(
             Int[],
             neighborhood,
-            (Int[], Int[], Int[], Int[]),
-            Int[]        
+            (Int[], Int[], Int[], Int[])     
             )
         ],
         Matrix{Float64}[],
-        zeros(Int, 1),
+        falses(1),
+        zeros(4),
         [1]))
     end
     interface_matrices = Matrix{Float64}[]
@@ -63,7 +63,7 @@ function DGKoppGrid(grid::G) where {G <: AbstractGrid}
 end
 
 function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
-    @assert all([all(root.refinement_order .== 0) for root in grid.kopp_roots]) "Grid must have no marked for refinement cells before marking for refinement"
+    @assert all([all(.!root.marked_for_refinement) for root in grid.kopp_roots]) "Grid must have no marked for refinement cells before marking for refinement"
     refined_interfaces = Int[]
     for (i, root) in enumerate(grid.kopp_roots)
         k = 0
@@ -72,7 +72,7 @@ function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
             if (i => j) ∈ cellset
                 k += 1
                 k_i += 1
-                root.refinement_order[j] = k
+                root.marked_for_refinement[j] = true
                 root.children_updated_indices[j+1:end] .+= 3
                 last_iterated_interface = 0
                 for face in cell.interface_matrix_index
@@ -159,7 +159,7 @@ function get_inherited_neighbors(grid::DGKoppGrid, parent_cell_idx::Pair{Int, In
             idx += 1
             flipped = grid.root_face_orientation_info[neighbor_idx.root][neighbor_idx.neighbor_face].flipped  == grid.root_face_orientation_info[parent_cell_idx[1]][face[2]].flipped
         end
-        if neighbor_root.refinement_order[neighbor_idx.child] == 0
+        if neighbor_root.marked_for_refinement[neighbor_idx.child] == false
             if !isempty(neighbor.secquence)
                 if length(neighbor.secquence) > length(parent.secquence)
                     neighbor_seq = neighbor.secquence[length(parent.secquence) + 1]
@@ -192,12 +192,15 @@ function correct_neighbors_neighbors!(grid::DGKoppGrid, cell::Pair{Int, Int}, ne
     face_face_neighbor_local = (3,4,1,2)
     for neighbor_idx in neighbors
         neighbor_root = grid.kopp_roots[neighbor_idx.root]
-        isassigned(neighbor_root.refinement_order, neighbor_idx.child) || continue
-        neighbor_root.refinement_order[neighbor_idx.child] != 0 && continue
+        isassigned(neighbor_root.marked_for_refinement, neighbor_idx.child) || continue
+        neighbor_root.marked_for_refinement[neighbor_idx.child] && continue
         neighbor_cell = neighbor_root.children[neighbor_idx.child]
         neighbor_face = neighbor_idx.neighbor_face
+        @info "cells before delete" neighbor_cell.neighbors[neighbor_face]
         filter!(x -> x != NeighborIndex(cell[1], cell[2] - face[1] + 1, face[2]), neighbor_cell.neighbors[neighbor_face])
+        @info "cells after delete" neighbor_cell.neighbors[neighbor_face]
         push!(neighbor_cell.neighbors[neighbor_face], NeighborIndex(cell[1], cell[2], face[2]))
+        @info "cells after add" neighbor_cell.neighbors[neighbor_face]
     end
 end
 
@@ -225,37 +228,50 @@ function refine!(grid::DGKoppGrid)
     neighborhoods = NTuple{4, Vector{NeighborIndex}}[]
     for root_idx in eachindex(grid.kopp_roots)
         root = grid.kopp_roots[root_idx]
-        for new_cell_idx in root.children_updated_indices
+        for (old_cell_idx, new_cell_idx) in enumerate(root.children_updated_indices)
             isassigned(root.children, new_cell_idx) || continue
-            for _i in 1:4
-                neighborhood = ntuple(k -> get_neighboring_cells(grid, root_idx=>new_cell_idx, FaceIndex(_i, k)), 4)
+            if root.marked_for_refinement[old_cell_idx]
+                for _i in 4:-1:1 # hotfix
+                    neighborhood = ntuple(k -> get_neighboring_cells(grid, root_idx=>new_cell_idx, FaceIndex(_i, k)), 4)
+                    push!(neighborhoods, neighborhood)
+                end
+            else
+                neighborhood = root.children[new_cell_idx].neighbors
                 push!(neighborhoods, neighborhood)
             end
+
         end
     end
+    @info neighborhoods
     current_cell_idx = 1
     for root_idx in eachindex(grid.kopp_roots)
         root = grid.kopp_roots[root_idx]
         old_cell_idx = 1
         for new_cell_idx in root.children_updated_indices
             isassigned(root.children, new_cell_idx) || continue
-            if root.refinement_order[old_cell_idx] != 0
-                for _i in 1:4
+            if root.marked_for_refinement[old_cell_idx]
+                for _i in 4:-1:1 # hotfix
                     neighborhood = neighborhoods[current_cell_idx]
                     for k in eachindex(neighborhood)
                         correct_neighbors_neighbors!(grid, root_idx => new_cell_idx + _i - 1, neighborhood[k], FaceIndex(_i, k))
                     end
+                    parent = root.children[new_cell_idx]
                     root.children[new_cell_idx + _i - 1] = DGKoppCell(
-                        [_i],
+                        [parent.secquence; _i],
                         neighborhood,
                         (Pair{Int, Int}[], Pair{Int, Int}[], Pair{Int, Int}[], Pair{Int, Int}[]),
-                        Int[]
                     )
                     current_cell_idx += 1
                 end
+            else
+                current_cell_idx += 1
             end
             old_cell_idx += 1
         end
+        resize!(grid.kopp_roots[root_idx].marked_for_refinement, length(grid.kopp_roots[root_idx].children))
+        grid.kopp_roots[root_idx].marked_for_refinement .= falses(length(grid.kopp_roots[root_idx].marked_for_refinement))
+        resize!(grid.kopp_roots[root_idx].children_updated_indices, length(grid.kopp_roots[root_idx].children))
+        grid.kopp_roots[root_idx].children_updated_indices .= collect(1:length(grid.kopp_roots[root_idx].children))
     end
 end
 
@@ -347,32 +363,32 @@ function assemble_interface_matrix!(ip::DiscontinuousLagrange, qr::FacetQuadratu
                 Jₐ = calculate_mapping(geo_mapping_a, q_point, x_a).J
                 Jᵦ = calculate_mapping(geo_mapping_b, q_point, x_b).J
                 w = qr.face_rules[face_a].weights[q_point]
-                dΩₐ = calculate_detJ(Jₐ) * w
-                dΩᵦ = calculate_detJ(Jᵦ) * w
+                Jₐ_inv = calculate_Jinv(Jₐ)
+                Jᵦ_inv = calculate_Jinv(Jᵦ)
+                weight_norm_a = weighted_normal(Jₐ, RefQuadrilateral, face_a)
+                weight_norm_b = weighted_normal(Jᵦ, RefQuadrilateral, face_b)
+                dΩₐ = norm(weight_norm_a) * w
+                dΩᵦ = norm(weight_norm_b) * w
                 dΓ = dΩₐ
-                weight_norm = weighted_normal(Jₐ, RefQuadrilateral, face_a)
-                normal =  weight_norm / norm(weight_norm)
+                normal =  weight_norm_a / norm(weight_norm_a)
                 for i in 1:2*n_basefuncs
                     ∇δu_here  = i > n_basefuncs ? shape_gradient(ip, i > n_basefuncs ? ξᵦ : ξₐ, i > n_basefuncs ? i - n_basefuncs  : i) : Vec(0.,0.)
                     ∇δu_there  = i > n_basefuncs ? Vec(0.,0.) : shape_gradient(ip, i > n_basefuncs ? ξᵦ : ξₐ, i > n_basefuncs ? i - n_basefuncs  : i)
                     δu_here  = i > n_basefuncs ? shape_value(ip, i > n_basefuncs ? ξᵦ : ξₐ, i > n_basefuncs ? i - n_basefuncs  : i) : 0.0
                     δu_there  = i > n_basefuncs ? 0.0 : shape_value(ip, i > n_basefuncs ? ξᵦ : ξₐ, i > n_basefuncs ? i - n_basefuncs  : i)
-                    test_jump = (δu_here - δu_there) * normal
-                    test_grad_avg = (∇δu_here + ∇δu_there)/2
+                    test_jump = -(δu_here - δu_there) * normal
+                    test_grad_avg = (dothelper(∇δu_here, Jₐ_inv)+ dothelper(∇δu_there, Jᵦ_inv))/2
                     for j in 1:2*n_basefuncs 
                         ∇u_here  = j > n_basefuncs ? shape_gradient(ip, j > n_basefuncs ? ξᵦ : ξₐ, j > n_basefuncs ? j - n_basefuncs  : j) : Vec(0.,0.)
                         ∇u_there  = j > n_basefuncs ? Vec(0.,0.) : shape_gradient(ip, j > n_basefuncs ? ξᵦ : ξₐ, j > n_basefuncs ? j - n_basefuncs  : j)
                         u_here  = j > n_basefuncs ? shape_value(ip, j > n_basefuncs ? ξᵦ : ξₐ, j > n_basefuncs ? j - n_basefuncs  : j) : 0.0
                         u_there  = j > n_basefuncs ? 0.0 : shape_value(ip, j > n_basefuncs ? ξᵦ : ξₐ, j > n_basefuncs ? j - n_basefuncs  : j)
-                        trial_jump = (u_here - u_there) * normal
-                        trial_grad_avg = (∇u_here + ∇u_there)/2
-                        Ki[i, j] += -(test_jump ⋅ trial_grad_avg + test_grad_avg ⋅ trial_jump) * dΓ + 1000.0 * (test_jump ⋅ trial_jump) * dΓ
+                        trial_jump = -(u_here - u_there) * normal
+                        trial_grad_avg = (dothelper(∇u_here, Jₐ_inv)+ dothelper(∇u_there, Jᵦ_inv))/2
+                        Ki[i, j] += -(test_jump ⋅ trial_grad_avg + test_grad_avg ⋅ trial_jump) * dΓ + 2 * (test_jump ⋅ trial_jump) * dΓ
                     end
                 end
             end
-            return Ki
         end
     end
-   
-   
 end
