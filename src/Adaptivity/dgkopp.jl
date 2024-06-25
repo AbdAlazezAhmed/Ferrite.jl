@@ -24,6 +24,7 @@ struct DGKoppGrid{G, M <: AbstractMatrix}
     interface_matrices::Vector{M}
     root_face_orientation_info::Vector{NTuple{4, OrientationInfo}}
     interfaces_updated_indices::Vector{Int} #TODO: remove?
+    interface_level::Vector{Int}
     interfaces_recompute::BitVector
 end
 
@@ -46,7 +47,7 @@ function DGKoppGrid(grid::G) where {G <: AbstractGrid}
         ],
         Matrix{Float64}[],
         falses(1),
-        zeros(4),
+        zeros(Int, 4),
         [1]))
     end
     interface_matrices = Matrix{Float64}[]
@@ -59,7 +60,7 @@ function DGKoppGrid(grid::G) where {G <: AbstractGrid}
         push!(cells[neighbor.root].children[neighbor.child].interface_matrix_index[neighbor.neighbor_face], i)
     end
     orientation = [ntuple(i -> OrientationInfo(facets(cell)[i]), 4) for cell in grid.cells]
-    return Ferrite.DGKoppGrid(grid, cells, interface_matrices, orientation, collect(1:length(interface_matrices)), falses(length(interface_matrices)))
+    return Ferrite.DGKoppGrid(grid, cells, interface_matrices, orientation, collect(1:length(interface_matrices)), zeros(Int, length(interface_matrices)), falses(length(interface_matrices)))
 end
 
 function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
@@ -78,6 +79,7 @@ function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
                 for face in cell.interface_matrix_index
                     for interface in face
                         interface ∈ refined_interfaces && continue
+                        grid.interface_level[interface] < length(cell.secquence) && continue
                         grid.interfaces_recompute[interface:interface + 1] .= true
                         grid.interfaces_updated_indices[interface+1:end] .+=1
                         last_iterated_interface = interface
@@ -89,22 +91,34 @@ function mark_for_refinement(grid::DGKoppGrid, cellset::Set{Pair{Int, Int}})
                 end
             end
         end
-        temp = deepcopy(root.children)
+        temp_children = deepcopy(root.children)
         l = length(root.children)+3*k
         resize!(root.children, l)
         resize!(root.cell_matrices, l)
-        root.children .= similar(temp, l)
+        root.children .= similar(temp_children, l)
+
         for (old, new) in enumerate(root.children_updated_indices)
-            root.children[new] = deepcopy(temp[old])
+            root.children[new] = deepcopy(temp_children[old])
             for j in 1:4
                 for (neighbor_idx, neighbor) in enumerate(root.children[new].neighbors[j])
                     root.children[new].neighbors[j][neighbor_idx] = NeighborIndex(neighbor.root, grid.kopp_roots[neighbor.root].children_updated_indices[neighbor.child], neighbor.neighbor_face)
                 end
             end
+            child = root.children[new]
+            for face in 1:4
+                for (_i_matrix, interface_matrices_idx) in enumerate(child.interface_matrix_index[face]) 
+                    child.interface_matrix_index[face][_i_matrix] = grid.interfaces_updated_indices[interface_matrices_idx]
+                end
+            end 
         end
     end
+    temp_interface_matrices = deepcopy(grid.interface_matrices)
     resize!(grid.interface_matrices, length(grid.interface_matrices) + length(refined_interfaces) + 4*length(cellset))
-
+    grid.interface_matrices .= similar(grid.interface_matrices)
+    for (old, new) in enumerate(grid.interfaces_updated_indices)
+        isdefined(temp_interface_matrices, old) || continue # hotfix
+        grid.interface_matrices[new] = temp_interface_matrices[old]
+    end
     return nothing
 end
 
@@ -224,6 +238,14 @@ function get_neighboring_cells(grid::DGKoppGrid, parent_cell_idx::Pair{Int, Int}
     end
 end
 
+function get_and_correct_iterface_matrices_idx(grid::DGKoppGrid, neighborhood::NTuple{4, Vector{NeighborIndex}}, parent_idx::Pair{Int, Int}, face_idx::FaceIndex)
+    result = Int[]
+    
+    for matrix_i in cell.interface_matrix_index[face]
+        
+    end
+end
+
 function refine!(grid::DGKoppGrid)
     neighborhoods = NTuple{4, Vector{NeighborIndex}}[]
     for root_idx in eachindex(grid.kopp_roots)
@@ -259,7 +281,7 @@ function refine!(grid::DGKoppGrid)
                     root.children[new_cell_idx + _i - 1] = DGKoppCell(
                         [parent.secquence; _i],
                         neighborhood,
-                        (Pair{Int, Int}[], Pair{Int, Int}[], Pair{Int, Int}[], Pair{Int, Int}[]),
+                        ntuple(face_idx -> get_and_correct_iterface_matrices_idx!(grid, neighborhood, root_idx => new_cell_idx, FaceIndex(_i, face_idx)), 4),
                     )
                     current_cell_idx += 1
                 end
@@ -285,7 +307,7 @@ function get_coords(grid::DGKoppGrid, cell_idx::Pair{Int, Int})
     cell = root.children[cell_idx[2]]
     nodes_idx = grid.base_grid.cells[cell_idx[1]].nodes
     coords = ntuple(i -> grid.base_grid.nodes[nodes_idx[i]].x, 4)
-    for k in length(cell.secquence):-1:1
+    for k in 1:length(cell.secquence)
         coords = transform_refined(coords, cell.secquence[k])
     end
     return coords
