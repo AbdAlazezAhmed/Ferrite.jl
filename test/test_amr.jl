@@ -15,10 +15,11 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
         add!(dh, :u, ip)
         close!(dh);
         refinement_cache = KoppRefinementCache(grid, topology);
-        kopp_cache = KoppCache(grid, dh, kopp_values, refinement_cache, topology);
+        sync = LTSAMRSynchronizer(grid, dh, kopp_values, refinement_cache, topology);
         cells_to_refine = Set([CellIndex(1)]);
-        refine!(grid, topology, refinement_cache, #=kopp_values,=# kopp_cache, cells_to_refine)
+        refine!(grid, topology, refinement_cache, #=kopp_values,=# sync, cells_to_refine)
         @testset "one level" begin
+            display(topology.cell_facet_neighbors_offset)
             @testset "coords" begin
                 coords = zeros(Vec{2, Float64}, 4)
                 Ferrite.getcoordinates!(coords, grid, CellIndex(2))
@@ -54,7 +55,7 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
             end
             @testset "two levels" begin
                 cells_to_refine = Set([CellIndex(4)]);
-                refine!(grid, topology, refinement_cache, kopp_cache, cells_to_refine)
+                refine!(grid, topology, refinement_cache, sync, cells_to_refine)
                 @testset "coords" begin
                     coords = zeros(Vec{2, Float64}, 4)
                     Ferrite.getcoordinates!(coords, grid, CellIndex(5))
@@ -104,7 +105,7 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
                 end
                 @testset "coarsening" begin
                     cells_to_coarsen = Set([CellIndex(4)]);
-                    coarsen!(grid, topology, refinement_cache, kopp_cache, cells_to_coarsen, dh);
+                    coarsen!(grid, topology, refinement_cache, sync, cells_to_coarsen, dh);
                     @testset "coords" begin
                         coords = zeros(Vec{2, Float64}, 4)
                         Ferrite.getcoordinates!(coords, grid, CellIndex(4))
@@ -156,9 +157,9 @@ end
         add!(dh, :u, ip)
         close!(dh);
         refinement_cache = KoppRefinementCache(grid, topology);
-        kopp_cache = KoppCache(grid, dh, kopp_values, refinement_cache, topology);
+        sync = LTSAMRSynchronizer(grid, dh, kopp_values, refinement_cache, topology);
         cells_to_refine = Set([CellIndex(1)]);
-        refine!(grid, topology, refinement_cache, kopp_cache, cells_to_refine)
+        refine!(grid, topology, refinement_cache, sync, cells_to_refine)
         @testset "one level" begin
             @testset "coords" begin
                 coords = zeros(Vec{3, Float64}, 8)
@@ -269,7 +270,7 @@ end
             end
             @testset "two levels" begin
                 cells_to_refine = Set([CellIndex(8)]);
-                refine!(grid, topology, refinement_cache, kopp_cache, cells_to_refine)
+                refine!(grid, topology, refinement_cache, sync, cells_to_refine)
                 @testset "coords" begin
                     coords = zeros(Vec{3, Float64}, 8)
                     Ferrite.getcoordinates!(coords, grid, CellIndex(9))
@@ -428,7 +429,7 @@ end
                 end
                 @testset "coarsening" begin
                     cells_to_coarsen = Set([CellIndex(8)])
-                    coarsen!(grid, topology, refinement_cache, kopp_cache, cells_to_coarsen, dh);
+                    coarsen!(grid, topology, refinement_cache, sync, cells_to_coarsen, dh);
                     @testset "coords" begin
                         coords = zeros(Vec{3, Float64}, 8)
                         Ferrite.getcoordinates!(coords, grid, CellIndex(8))
