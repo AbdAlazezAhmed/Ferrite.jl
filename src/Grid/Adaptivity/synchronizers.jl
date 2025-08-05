@@ -25,10 +25,11 @@ end
 
 function sync_amr_refinement_forward!(grid::KoppGrid, sync::LTSAMRSynchronizer, refinement_cache::KoppRefinementCache, n_refined_cells::Int, n_neighborhoods::Int)
     Dim = Ferrite.getspatialdim(grid.base_grid)
-    new_length = last(size(sync.cell_matrices))+(2^Dim)*n_refined_cells
-    resize!(sync.cell_matrices, (size(sync.cell_matrices)[1], size(sync.cell_matrices)[2], new_length))
-    resize!(sync.interface_matrix_index, n_neighborhoods)
-    resize!(sync.interface_matrices, (size(sync.interface_matrices)[1], size(sync.interface_matrices)[2], n_neighborhoods ÷ 2))
+    new_length = last(size(sync.M_cell_matrices))+(2^Dim)*n_refined_cells
+    resize!(sync.M_cell_matrices, (size(sync.M_cell_matrices)[1], size(sync.M_cell_matrices)[2], new_length))
+    resize!(sync.K_cell_matrices, (size(sync.K_cell_matrices)[1], size(sync.K_cell_matrices)[2], new_length))
+    # resize!(sync.K_interface_matrix_index, n_neighborhoods)
+    resize!(sync.K_interface_matrices, (size(sync.K_interface_matrices)[1], size(sync.K_interface_matrices)[2], n_neighborhoods ÷ 2))
     # resize!(sync.ansatz_isactive, new_length * sync.dh.subdofhandlers[1].ndofs_per_cell)
     resize!(sync.dh.cell_dofs, new_length * sync.dh.subdofhandlers[1].ndofs_per_cell)
     resize!(sync.dh.cell_dofs_offset, new_length)
@@ -53,14 +54,34 @@ function LTSAMRSynchronizer(grid::KoppGrid, dh::Ferrite.AbstractDofHandler, kopp
     ip = DiscontinuousLagrange{ref_shape, 1}()
     qr = QuadratureRule{ref_shape}(1)
     geo_mapping = Ferrite.GeometryMapping{1}(Float64, ip, qr)
-    cell_matrices = ElasticArray(zeros(Float64, ndofs_cell, ndofs_cell, length(refinement_cache.children_updated_indices)))
+    # M
+    M_cell_matrices = ElasticArray(zeros(Float64, ndofs_cell, ndofs_cell, length(refinement_cache.children_updated_indices)))
     for cell_cache in Ferrite.CellIterator(grid)
+        reinit!(kopp_values.cell_values, cell_cache)
         cell_idx = cell_cache.cellid
-        assemble_element_matrix!(cell_matrices[:,:,cell_idx], kopp_values)
+        assemble_element_matrix!((@view M_cell_matrices[:,:,cell_idx]), kopp_values)
     end
-    interface_matrices = ElasticArray(zeros(Float64, 2 * ndofs_cell, 2 * ndofs_cell, length(refinement_cache.interfaces_updated_indices)))
+    # K_cell_matrices
+    K_cell_matrices = ElasticArray(zeros(Float64, ndofs_cell, ndofs_cell, length(refinement_cache.children_updated_indices)))
+    for cell_cache in Ferrite.CellIterator(grid)
+        reinit!(kopp_values.cell_values, cell_cache)
+        cell_idx = cell_cache.cellid
+        assemble_element_matrix!((@view K_cell_matrices[:,:,cell_idx]), kopp_values)
+    end
+    K_interface_matrices = ElasticArray(zeros(Float64, 2 * ndofs_cell, 2 * ndofs_cell, length(topology.neighbors)÷2))
     # Construct interface matrix indices
     interface_matrix_indices = Vector{Int}(undef, count(topology.cell_facet_neighbors_length .!= 0 ))
+    interface_index = 1
+    ii = Ferrite.InterfaceIterator(grid, topology)
+    for (facet_idx, nneighbors, ninterfaces) in ii
+        interface_cache = ii.cache
+        reinit!(kopp_values.interface_values, interface_cache, topology)
+        assemble_interface_matrix!((@view K_interface_matrices[:,:,interface_index]), kopp_values)
+        interface_index += 1
+    end
+    display(K_interface_matrices)
+
+    N_cell_vectors = zero(u)
     new_offset = 1
     for (idx, offset) in pairs(IndexCartesian(), topology.cell_facet_neighbors_offset)
         offset == 0 && continue
@@ -75,5 +96,17 @@ function LTSAMRSynchronizer(grid::KoppGrid, dh::Ferrite.AbstractDofHandler, kopp
         new_offset += 1
     end
     ansatz_isactive = trues(ndofs(dh))
-    return LTSAMRSynchronizer(kopp_values, dh, copy(dh.cell_dofs), copy(dh.cell_dofs_offset), copy(dh.cell_to_subdofhandler), cell_matrices, interface_matrices, u, interface_matrix_indices)
+    return LTSAMRSynchronizer(kopp_values,
+                    dh,
+                    copy(dh.cell_dofs),
+                    copy(dh.cell_dofs_offset),
+                    copy(dh.cell_to_subdofhandler),
+                    M_cell_matrices,
+                    K_cell_matrices,
+                    K_interface_matrices,
+                    N_cell_vectors,
+                    u,
+                    interface_matrix_indices)
 end
+
+struct KoppSynchronizer end

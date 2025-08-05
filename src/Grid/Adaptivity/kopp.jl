@@ -57,7 +57,7 @@ function KoppRefinementCache(grid::KoppGrid, topology::KoppTopology)
     end
     return KoppRefinementCache(
         collect(1:length(topology.root_idx)),
-        interfaces,
+        collect(1:n_interfaces ÷ 2),
         falses(length(topology.root_idx)),
         falses(length(topology.root_idx)),
         1)
