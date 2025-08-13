@@ -25,7 +25,7 @@ function Ferrite.CellIterator(gridordh::Union{KoppGrid,<:DofHandler{Dim,<:KoppGr
     flags::UpdateFlags=UpdateFlags(false, true, true)) where Dim
     if set === nothing
         grid = gridordh isa DofHandler ? Ferrite.get_grid(gridordh) : gridordh
-        set = 1:getncells(grid)
+        set = findall(cell -> cell.isleaf, grid.kopp_cells)
     end
     if gridordh isa DofHandler
         # TODO: Since the CellCache is resizeable this is not really necessary to check
@@ -44,42 +44,18 @@ function Ferrite.InterfaceIterator(gridordh::Union{Ferrite.AbstractGrid,Ferrite.
     return Ferrite.InterfaceIterator(Ferrite.InterfaceCache(gridordh), grid, topology)
 end
 
-function Base.iterate(ii::Ferrite.InterfaceIterator{IC,<:KoppGrid{sdim}}, state::NTuple{3,Int}=(1, 1, 1)) where {sdim,IC}
-    ninterfaces = state[3]
-    facet_idx = state[1]
-    nneighbors = state[2]
+function Base.iterate(ii::Ferrite.InterfaceIterator{IC,<:KoppGrid{sdim}}, state = (1,1)) where {sdim,IC}
     while true
-        facet_idx > length(ii.topology.cell_facet_neighbors_offset) && return nothing
-        neighborhood_offset = ii.topology.cell_facet_neighbors_offset[(facet_idx-1)%(2*sdim)+1, (facet_idx-1)÷(2*sdim)+1]
-        neighborhood_length = ii.topology.cell_facet_neighbors_length[(facet_idx-1)%(2*sdim)+1, (facet_idx-1)÷(2*sdim)+1]
-        if neighborhood_offset == 0
-            facet_idx = facet_idx + 1
+        it = iterate(ii.topology, state)
+        it === nothing && return nothing
+        (facet_a, neighbors), state = it
+        if length(neighbors) != 1
             continue
         end
-        neighborhood = @view ii.topology.neighbors[neighborhood_offset:neighborhood_offset+neighborhood_length-1]
-        if nneighbors < neighborhood_length
-            neighbor = neighborhood[nneighbors]
-            facet_idx = facet_idx
-            nneighbors = nneighbors + 1
-        else
-            neighbor = neighborhood[nneighbors]
-            facet_idx = facet_idx + 1
-            nneighbors = 1
-        end
-        _facet_idx = nneighbors == 1 ? facet_idx - 1 : facet_idx
-        _nneighbors = nneighbors == 1 ? nneighbors : nneighbors - 1
-        cell_idx = (_facet_idx - 1) ÷ (2 * sdim) + 1
-        facet_a = (_facet_idx - 1) % (2 * sdim) + 1
-        cell = ii.grid.kopp_cells[cell_idx]
-        cell_refinement_level = get_refinement_level(cell)
-        neighbor_refinement_level = get_refinement_level(ii.grid.kopp_cells[neighbor[1]])
-        if ((cell_refinement_level == neighbor_refinement_level) && (neighbor[1] > cell_idx)) || (cell_refinement_level < neighbor_refinement_level)
-            reinit!(ii.cache, FacetIndex(cell_idx, facet_a), neighbor)
-            ninterfaces += 1
-            return (facet_idx, nneighbors, ninterfaces), (facet_idx, nneighbors, ninterfaces)
-        else
-            continue
-        end
+        facet_b = neighbors[]
+        facet_a[1] > facet_b[1] && continue
+        reinit!(ii.cache, facet_a, facet_b)
+        return (ii.cache, state)
     end
-    return nothing
+    return
 end

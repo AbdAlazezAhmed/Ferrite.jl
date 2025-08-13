@@ -3,6 +3,7 @@ using Ferrite, StaticArrays, ElasticArrays, Tensors
 struct KoppCell{Dim, T <: Integer} <: Ferrite.AbstractCell{Ferrite.RefHypercube{Dim}}
     parent::T
     sequence::T
+    isleaf::Bool
 end
 
 struct ValuesCache{CellValuesT <: CellValues, FacetValuesT <: FacetValues, InterfaceValuesT <: InterfaceValues}
@@ -18,8 +19,10 @@ struct KoppGrid{Dim, G <: Ferrite.AbstractGrid{Dim}} <: Ferrite.AbstractGrid{Dim
 end
 
 struct KoppRefinementCache{IntT <:Int}
-    children_updated_indices::Vector{IntT}
+    old_cell_to_new_cell_map::Vector{IntT}
+    new_cell_to_old_cell_map::Vector{IntT}
     interfaces_updated_indices::Vector{IntT}
+    interfaces_data_updated_indices::Vector{IntT}
     marked_for_refinement::BitVector
     marked_for_coarsening::BitVector
     ncoarseninglevels::IntT
@@ -30,6 +33,7 @@ include("values.jl")
 include("iterators.jl")
 include("synchronizers.jl")
 include("utils.jl")
+include("refinement.jl")
 
 
 function get_refinement_level(cell::KoppCell{Dim, T}) where {Dim, T}
@@ -44,20 +48,15 @@ function get_refinement_level(cell::KoppCell{Dim, T}) where {Dim, T}
 end
 
 function KoppRefinementCache(grid::KoppGrid, topology::KoppTopology)
-    interfaces = zeros(Int, length(topology.neighbors))
     n_interfaces = 0
-    for (i, offset) in pairs(IndexCartesian(), topology.cell_facet_neighbors_offset)
-            offset == 0 && continue
-            neighbor = topology.neighbors[offset]
-            # Refine interface when the current cell is lower index than the neighbor only to avoid race conditions
-            get_refinement_level(grid.kopp_cells[neighbor.idx[1]]) == get_refinement_level(grid.kopp_cells[i[2]]) && i[2] > neighbor.idx[1] && continue
-            n_interfaces += 1
-            interfaces[offset] = n_interfaces
-            interfaces[topology.cell_facet_neighbors_offset[neighbor.idx[2], neighbor.idx[1]]] = n_interfaces
+    for _ in InterfaceIterator(grid, topology)
+        n_interfaces += 1
     end
     return KoppRefinementCache(
         collect(1:length(topology.root_idx)),
-        collect(1:n_interfaces ÷ 2),
+        zeros(Int64,length(topology.root_idx)),
+        collect(1:n_interfaces),
+        collect(1:n_interfaces),
         falses(length(topology.root_idx)),
         falses(length(topology.root_idx)),
         1)
@@ -88,25 +87,29 @@ function Ferrite.get_grid(dh::Ferrite.AbstractDofHandler)
     return dh.grid
 end
 
-function Ferrite.generate_grid(C::Type{KoppCell{2, T}}, nel::NTuple{2,Int}) where {T}
-    grid =  generate_grid(Quadrilateral, nel)
+function Ferrite.generate_grid(C::Type{KoppCell{2, T}}, nel::NTuple{2,Int}, left::Vec{2, T2} = Vec((-1.0, -1.0)), right::Vec{2, T2} = Vec((1.0, 1.0))) where {T, T2}
+    grid =  generate_grid(Quadrilateral, nel, left, right)
     return KoppGrid(grid)
 end
 
-function Ferrite.generate_grid(C::Type{KoppCell{3, T}}, nel::NTuple{3,Int}) where {T}
-    grid =  generate_grid(Hexahedron, nel)
+function Ferrite.generate_grid(C::Type{KoppCell{3, T}}, nel::NTuple{3,Int}, left::Vec{3, T2} = Vec((-1.0, -1.0, -1.0)), right::Vec{3, T2} = Vec((1.0, 1.0, 1.0))) where {T, T2}
+    grid =  generate_grid(Hexahedron, nel, left, right)
     return KoppGrid(grid)
 end
-
 
 function Ferrite.getneighborhood(topology::KoppTopology, grid::KoppGrid, facetidx::FacetIndex)
     offset = topology.cell_facet_neighbors_offset[facetidx[2], facetidx[1]]
     length = topology.cell_facet_neighbors_length[facetidx[2], facetidx[1]]
-    return offset == 0 ? nothing : @view topology.neighbors[offset : offset + length - 1]
+    return offset == 0 ? (@view topology.neighbors[0 : -1]) : @view topology.neighbors[offset : offset + length - 1]
+end
+function Ferrite.getneighborhood(topology::KoppTopology, facetidx::FacetIndex)
+    offset = topology.cell_facet_neighbors_offset[facetidx[2], facetidx[1]]
+    length = topology.cell_facet_neighbors_length[facetidx[2], facetidx[1]]
+    return offset == 0 ? (@view topology.neighbors[0 : -1]) : @view topology.neighbors[offset : offset + length - 1]
 end
 
 function KoppGrid(grid::G) where {Dim, G <: Ferrite.AbstractGrid{Dim}}
-    cells = KoppCell{Dim, Int}[KoppCell{Dim, Int}(-i, 0) for i in 1:getncells(grid)]
+    cells = KoppCell{Dim, Int}[KoppCell{Dim, Int}(-i, 0, true) for i in 1:getncells(grid)]
     return KoppGrid(grid, cells, copy(cells))
 end
 
@@ -117,22 +120,23 @@ function refine!(
         sync::AbstractAMRSynchronizer,
         cellset::Set{CellIndex}
         ) where Dim
+    @time  "_calc_interfaces_dict_prev" interfaces_dict_prev = _calc_interfaces_dict_prev(grid, topology)
+
     n_refined_cells = length(cellset)
     new_length = length(grid.kopp_cells)+(2^Dim)*n_refined_cells
     # we need to resize this one early
     _resize_marked_for_refinement!(grid, refinement_cache, cellset)
     n_refined_interfaces = 0
     NFacets = 2*Dim
-    refinement_cache.children_updated_indices .= 1:length(refinement_cache.children_updated_indices)
+    refinement_cache.old_cell_to_new_cell_map .= 1:length(refinement_cache.old_cell_to_new_cell_map)
     # Counting how many refined cells and interfaces and calculating the new index
-    _update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
+    @time "_update_refinement_cache_isactive" _update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
 
-    _resize_topology!(topology, new_length, Val(Dim))
+    @time "_resize_topology" _resize_topology!(topology, new_length, Val(Dim))
 
     zero_topology!(topology)
 
-    n_neighborhoods = count_neighbors_update_indexing!(grid, topology, refinement_cache)
-
+    @time  "count_neighbors_update_indexing!" n_neighborhoods = count_neighbors_update_indexing!(grid, topology, refinement_cache)
     # sync_amr_refinement_forward!()
     sync_amr_refinement_forward!(grid, sync, refinement_cache, n_refined_cells, n_neighborhoods)
 
@@ -151,15 +155,18 @@ function refine!(
 
 
     # # deactivate all parents' shape functions
-    update_neighbors!(grid, topology, refinement_cache)
+    @time update_neighbors!(grid, topology, refinement_cache)
+    @time  "_calc_interfaces_map" _calc_interfaces_map(grid, topology, refinement_cache, interfaces_dict_prev)
 
     # # Refine KoppCache
     # resize!(sync.u, new_length * dh.subdofhandlers[1].ndofs_per_cell)
 
     # update_koppcache!(grid, refinement_cache, topology, temp_topology, sync, kopp_values, dh, NFacets)
 
+    sync_amr_refinement_backward!(sync, refinement_cache, grid, topology)
+
     # # # resize refinement cache
-    resize!(refinement_cache.children_updated_indices, new_length)
+    resize!(refinement_cache.old_cell_to_new_cell_map, new_length)
     resize!(refinement_cache.marked_for_refinement, new_length)
     resize!(refinement_cache.marked_for_coarsening, new_length)
 
@@ -175,7 +182,6 @@ function refine!(
     copy!(topology.root_idx_prev, topology.root_idx)
     refinement_cache.marked_for_refinement .= false
     refinement_cache.marked_for_coarsening .= false
-    sync_amr_refinement_backward!(sync)
     return nothing
 end
 
@@ -192,7 +198,7 @@ function coarsen!(
     __resize_marked_for_refinement!(grid, refinement_cache, cellset)
     # n_refined_interfaces = 0
     NFacets = 2*Dim
-    refinement_cache.children_updated_indices .= 1:length(refinement_cache.children_updated_indices)
+    refinement_cache.old_cell_to_new_cell_map .= 1:length(refinement_cache.old_cell_to_new_cell_map)
     # Counting how many refined cells and interfaces and calculating the new index
     __update_refinement_cache_isactive!(grid, topology, refinement_cache, kopp_cache, cellset, dh)
 
@@ -218,10 +224,10 @@ function coarsen!(
 
     update_coarsened_root_idx!(grid, topology, refinement_cache)
 
-    update_coarsened_dofs!(grid, refinement_cache, dh, temp_celldofs, temp_cell_dofs_offset, temp_cell_to_subdofhandler)
-    resize!(dh.cell_dofs, new_length * dh.subdofhandlers[1].ndofs_per_cell)
-    resize!(dh.cell_dofs_offset, new_length)
-    resize!(dh.cell_to_subdofhandler, new_length)
+    # update_coarsened_dofs!(grid, refinement_cache, dh, temp_celldofs, temp_cell_dofs_offset, temp_cell_to_subdofhandler)
+    # resize!(dh.cell_dofs, new_length * dh.subdofhandlers[1].ndofs_per_cell)
+    # resize!(dh.cell_dofs_offset, new_length)
+    # resize!(dh.cell_to_subdofhandler, new_length)
     # kopp_cache.interface_matrix_index .= 0
 
     # # Refine KoppCache
@@ -245,7 +251,7 @@ function coarsen!(
     copy!(topology.root_idx_prev, topology.root_idx)
 
     # # # # resize refinement cache
-    resize!(refinement_cache.children_updated_indices, new_length)
+    resize!(refinement_cache.old_cell_to_new_cell_map, new_length)
     resize!(refinement_cache.marked_for_coarsening, new_length)
     resize!(refinement_cache.marked_for_refinement, new_length)
     # resize!(refinement_cache.interfaces_updated_indices, length(kopp_cache.interface_matrices) + n_refined_interfaces * (2^(Dim-1) - 1))
@@ -257,44 +263,22 @@ function Ferrite.getcoordinates!(coords, grid::KoppGrid{Dim}, i) where Dim
     return nothing
 end
 
-# # # 2 allocs for J?
-function assemble_element_matrix!(Ke, kopp_values::ValuesCache)
-    cv = kopp_values.cell_values
-    n_basefuncs = getnbasefunctions(cv)
-    for q_point in 1:getnquadpoints(cv.qr)
-        dΩ = getdetJdV(cv, q_point)
-        for i in 1:n_basefuncs
-            δu  = Ferrite.shape_value(cv, q_point, i)
-            for j in 1:n_basefuncs
-                u = Ferrite.shape_value(cv, q_point, i)
-                Ke[i, j] += (δu ⋅ u) * dΩ
-            end
-        end
+function to_ferrite_grid(grid::KoppGrid{2})
+    cells = Quadrilateral[]
+    nodes = Node{2, Float64}[]
+    for cc in CellIterator(grid)
+        push!(nodes, Node.(getcoordinates(cc))...)
     end
-    return nothing
+    unique!(nodes)
+    for cc in CellIterator(grid)
+        idx1 = findfirst(x -> x == Node(getcoordinates(cc)[1]), nodes)
+        idx2 = findfirst(x -> x == Node(getcoordinates(cc)[2]), nodes)
+        idx3 = findfirst(x -> x == Node(getcoordinates(cc)[3]), nodes)
+        idx4 = findfirst(x -> x == Node(getcoordinates(cc)[4]), nodes)
+        push!(cells, Quadrilateral((idx1, idx2, idx3, idx4)))
+        @info cellid(cc)
+    end
+
+    return Ferrite.Grid(cells, nodes)
 end
 
-
-function assemble_interface_matrix!(Ki, kopp_values::ValuesCache, μ::Float64 = 10.)
-    iv = kopp_values.interface_values
-    for q_point in 1:getnquadpoints(iv)
-        # Get the normal to facet A
-        normal = getnormal(iv, q_point)
-        # Get the quadrature weight
-        dΓ = getdetJdV(iv, q_point)
-        # Loop over test shape functions
-        for i in 1:getnbasefunctions(iv)
-            # Multiply the jump by the negative normal to get the definition from the theory section.
-            δu_jump = shape_value_jump(iv, q_point, i) * (-normal)
-            ∇δu_avg = shape_gradient_average(iv, q_point, i)
-            # Loop over trial shape functions
-            for j in 1:getnbasefunctions(iv)
-                # Multiply the jump by the negative normal to get the definition from the theory section.
-                u_jump = shape_value_jump(iv, q_point, j) * (-normal)
-                ∇u_avg = shape_gradient_average(iv, q_point, j)
-                # Add contribution to Ki
-                Ki[i, j] += -(δu_jump ⋅ ∇u_avg + ∇δu_avg ⋅ u_jump)*dΓ +  μ * (δu_jump ⋅ u_jump) * dΓ
-            end
-        end
-    end
-end

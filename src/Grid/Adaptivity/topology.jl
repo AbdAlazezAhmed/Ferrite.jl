@@ -20,23 +20,20 @@ function KoppTopology(grid::KoppGrid{Dim}) where Dim
     return KoppTopology(root_idx, copy(root_idx), cell_facet_neighbors_offset, copy(cell_facet_neighbors_offset), cell_facet_neighbors_length, copy(cell_facet_neighbors_length), neighbors, copy(neighbors), root_facet_orientation_info)
 end
 
-@inline function _iterate(topology::KoppTopology, state::NTuple{2, Int} = (1,1)) where sdim
-    state[1] > length(topology.cell_facet_neighbors_offset) && return nothing
-    neighborhood_offset = topology.cell_facet_neighbors_offset[(state[1]-1) % 4 + 1, (state[1]-1) ÷ 4 + 1]
-    neighborhood_length = topology.cell_facet_neighbors_length[(state[1]-1) % 4 + 1, (state[1]-1) ÷ 4 + 1]
-    neighborhood_offset == 0 && return(FacetIndex(0,0), (state[1] + 1, state[2]))
-    neighborhood = @view topology.neighbors[neighborhood_offset : neighborhood_offset + neighborhood_length - 1]
-    if state[2] < neighborhood_length
-        ret = neighborhood[state[2]]
+@inline function _iterate(topology::KoppTopology, state::NTuple{2, Int} = (1,1))
+    state[1] > size(topology.cell_facet_neighbors_offset, 2) && return nothing
+    neighborhood = getneighborhood(topology, FacetIndex(state[1], state[2]))
+    if state[2] < size(topology.cell_facet_neighbors_offset, 1)
+        ret = (FacetIndex(state[1], state[2]), neighborhood)
         state = (state[1], state[2] + 1)
     else
-        ret = neighborhood[state[2]]
+        ret = (FacetIndex(state[1], state[2]), neighborhood)
         state = (state[1] + 1, 1)
     end
     return (ret, state)
 end
 
 
-function Base.iterate(topology::KoppTopology, state::NTuple{2, Int} = (1,1)) where sdim
+function Base.iterate(topology::KoppTopology, state::NTuple{2, Int} = (1,1))
     _iterate(topology, state)
 end

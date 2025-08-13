@@ -1,13 +1,3 @@
-function _resize_marked_for_refinement!(
-    grid::KoppGrid{Dim},
-    refinement_cache::KoppRefinementCache,
-    cellset::Set{CellIndex}) where {Dim}
-    n_refined_cells = length(cellset)
-    new_length = length(grid.kopp_cells) + (2^Dim) * n_refined_cells
-    resize!(refinement_cache.marked_for_refinement, new_length)
-    refinement_cache.marked_for_refinement[length(grid.kopp_cells) + 1 : end] .= false
-    return nothing
-end
 
 function __resize_marked_for_refinement!(
     grid::KoppGrid{Dim},
@@ -20,117 +10,6 @@ function __resize_marked_for_refinement!(
     return nothing
 end
 
-function update_neighbors!(
-    grid::KoppGrid{Dim},
-    topology::KoppTopology,
-    refinement_cache::KoppRefinementCache) where {Dim}
-    NFacets = 2 * Dim
-    temp_cell_facet_neighbors_offset = topology.cell_facet_neighbors_offset_prev
-    temp_cell_facet_neighbors_length = topology.cell_facet_neighbors_length_prev
-    n_neighborhoods = 0
-    ref_cell_neighborhood = get_ref_cell_neighborhood(getrefshape(getcelltype(grid.base_grid)))
-    for (i, cell) in enumerate(grid.kopp_cells_prev)
-        new_i = refinement_cache.children_updated_indices[i]
-        if refinement_cache.marked_for_refinement[new_i]
-            for new_seq in 1:2^Dim
-                for facet in 1:NFacets
-                    n_facet_neighbors = 0
-                    if ref_cell_neighborhood[new_seq][facet] == 0
-                        n_inherited_neighbors = add_inherited_neighbors!(n_neighborhoods, i, refinement_cache, facet, topology, grid, new_seq)
-                        n_facet_neighbors += n_inherited_neighbors
-                    else
-                        n_facet_neighbors += 1
-                        topology.neighbors[n_neighborhoods + 1] = FacetIndex(new_i + ref_cell_neighborhood[new_seq][facet], get_ref_face_neighborhood(getrefshape(getcelltype(grid.base_grid)))[facet])
-                    end
-                    n_neighborhoods += n_facet_neighbors
-                end
-            end
-        else
-            for facet in 1:NFacets
-                n_facet_neighbors = 0
-                neighbors_offset = temp_cell_facet_neighbors_offset[facet, i]
-                neighbors_length = temp_cell_facet_neighbors_length[facet, i]
-                for neighbor in @view topology.neighbors_prev[neighbors_offset:neighbors_offset+neighbors_length-1]
-                    if refinement_cache.marked_for_refinement[refinement_cache.children_updated_indices[neighbor[1]]]
-                        # TODO: double check if we use old or new index here
-                        for (i, new_seq) in enumerate(Ferrite.reference_facets(getrefshape(getcelltype(grid.base_grid)))[neighbor[2]])
-                            topology.neighbors[n_neighborhoods + n_facet_neighbors + i] = FacetIndex(refinement_cache.children_updated_indices[neighbor[1]] + new_seq, get_ref_face_neighborhood(getrefshape(getcelltype(grid.base_grid)))[facet])
-                        end
-                        n_facet_neighbors += 2^(Dim - 1)
-
-                    else
-                        n_facet_neighbors += 1
-                        topology.neighbors[n_neighborhoods + n_facet_neighbors] = FacetIndex(refinement_cache.children_updated_indices[neighbor[1]], neighbor[2])
-                    end
-                end
-                topology.cell_facet_neighbors_offset[facet, new_i] = n_facet_neighbors == 0 ? 0 : n_neighborhoods + 1
-                topology.cell_facet_neighbors_length[facet, new_i] = n_facet_neighbors == 0 ? 0 : n_facet_neighbors
-                n_neighborhoods += n_facet_neighbors
-            end
-        end
-    end
-    return n_neighborhoods
-end
-
-function _update_refinement_cache_isactive!(
-    grid::KoppGrid{Dim},
-    topology::KoppTopology, # Old topology
-    refinement_cache::KoppRefinementCache,
-    cellset::Set{CellIndex}
-    ) where {Dim}
-    n_refined_interfaces = 0
-    for (i, cell) in enumerate(grid.kopp_cells)
-        if CellIndex(i) ∈ cellset
-            refinement_cache.children_updated_indices[i+1:end] .= (@view refinement_cache.children_updated_indices[i+1:end]) .+ 2^Dim
-            refinement_cache.marked_for_refinement[refinement_cache.children_updated_indices[i]] = true
-            # kopp_cache.ansatz_isactive[@view dh.cell_dofs[dh.cell_dofs_offset[i]:dh.cell_dofs_offset[i]+dh.subdofhandlers[1].ndofs_per_cell-1]] .= false
-            # kopp_cache.ansatz_isactive[dh.cell_dofs_offset[i]+dh.subdofhandlers[1].ndofs_per_cell : dh.cell_dofs_offset[i]+dh.subdofhandlers[1].ndofs_per_cell*(2^Dim) - 1] .= true
-            for facet in 1:2Dim
-                interface_offset = topology.cell_facet_neighbors_offset[facet, i]
-                interface_length = topology.cell_facet_neighbors_length[facet, i]
-                for interface_index_idx in interface_offset : interface_offset + interface_length - 1
-                    interface_offset == 0 && continue
-                    neighbor = topology.neighbors[interface_index_idx]
-                    # Refine interface when the current cell is lower index than the neighbor only to avoid race conditions
-                    get_refinement_level(grid.kopp_cells[neighbor.idx[1]]) == get_refinement_level(cell) && i > neighbor.idx[1] && continue
-                    # Refine the interface only if the neighbor is not finer than the current cell
-                    get_refinement_level(grid.kopp_cells[neighbor.idx[1]]) < get_refinement_level(cell) && continue
-                    # TODO: Invalidate interface matrices
-                    # grid.interfaces_recompute[interface:interface + 1] .= true
-                    n_refined_interfaces += 1
-                    @show refinement_cache.interfaces_updated_indices interface_index_idx
-                end
-            end
-        end
-    end
-    old_length = length(refinement_cache.interfaces_updated_indices)
-    resize!(refinement_cache.interfaces_updated_indices, old_length + n_refined_interfaces * (2^(Dim-1) - 1))
-    n_refined_interfaces = 0
-    for (i, cell) in enumerate(grid.kopp_cells)
-        if CellIndex(i) ∈ cellset
-            for facet in 1:2Dim
-                interface_offset = topology.cell_facet_neighbors_offset[facet, i]
-                interface_length = topology.cell_facet_neighbors_length[facet, i]
-                for interface_index_idx in interface_offset : interface_offset + interface_length - 1
-                    interface_offset == 0 && continue
-                    neighbor = topology.neighbors[interface_index_idx]
-                    # Refine interface when the current cell is lower index than the neighbor only to avoid race conditions
-                    get_refinement_level(grid.kopp_cells[neighbor.idx[1]]) == get_refinement_level(cell) && i > neighbor.idx[1] && continue
-                    # Refine the interface only if the neighbor is not finer than the current cell
-                    get_refinement_level(grid.kopp_cells[neighbor.idx[1]]) < get_refinement_level(cell) && continue
-                    @show get_refinement_level(grid.kopp_cells[neighbor.idx[1]]) get_refinement_level(cell) i neighbor.idx[1]
-
-                    n_refined_interfaces += 1
-                    refinement_cache.interfaces_updated_indices[interface_index_idx+1:old_length] .= (@view refinement_cache.interfaces_updated_indices[interface_index_idx+1:old_length]) .+ (2^(Dim-1) - 1)
-                    refinement_cache.interfaces_updated_indices[old_length + n_refined_interfaces] = refinement_cache.interfaces_updated_indices[interface_index_idx] + n_refined_interfaces
-                    @show refinement_cache.interfaces_updated_indices interface_index_idx
-                end
-            end
-        end
-    end
-    return nothing
-end
-
 function __update_refinement_cache_isactive!(
     grid::KoppGrid{Dim},
     topology::KoppTopology, # Old topology
@@ -140,9 +19,9 @@ function __update_refinement_cache_isactive!(
     dh::DofHandler) where {Dim}
     for (i, cell) in enumerate(grid.kopp_cells)
         if CellIndex(i) ∈ cellset
-            refinement_cache.children_updated_indices[i+(2^Dim)+1:end] .= (@view refinement_cache.children_updated_indices[i+(2^Dim)+1:end]) .- 2^Dim
-            refinement_cache.children_updated_indices[i+1:i+(2^Dim)] .= 0
-            refinement_cache.marked_for_coarsening[refinement_cache.children_updated_indices[i]] = true
+            refinement_cache.old_cell_to_new_cell_map[i+(2^Dim)+1:end] .= (@view refinement_cache.old_cell_to_new_cell_map[i+(2^Dim)+1:end]) .- 2^Dim
+            refinement_cache.old_cell_to_new_cell_map[i+1:i+(2^Dim)] .= 0
+            refinement_cache.marked_for_coarsening[refinement_cache.old_cell_to_new_cell_map[i]] = true
             # kopp_cache.ansatz_isactive[@view dh.cell_dofs[dh.cell_dofs_offset[i]:dh.cell_dofs_offset[i]+dh.subdofhandlers[1].ndofs_per_cell-1]] .= true
             # kopp_cache.ansatz_isactive[dh.cell_dofs_offset[i]+dh.subdofhandlers[1].ndofs_per_cell : dh.cell_dofs_offset[i]+dh.subdofhandlers[1].ndofs_per_cell*(2^Dim) - 1] .= true
             for facet in 1:2Dim
@@ -191,7 +70,7 @@ function update_topology!(
     sizehint!(set, maximum(temp_cell_facet_neighbors_length)*(2^(Dim-1)))
     empty!(topology.neighbors)
     for (i, cell) in enumerate(grid.kopp_cells)
-        new_i = refinement_cache.children_updated_indices[i]
+        new_i = refinement_cache.old_cell_to_new_cell_map[i]
         new_i == 0 && continue
         if refinement_cache.marked_for_coarsening[new_i]
             # TODO: Avoid using sets
@@ -204,7 +83,7 @@ function update_topology!(
                         for child_neighbor in child_neighbors
                             parent_idx = grid.kopp_cells[child_neighbor[1]].parent
                             if parent_idx < 0 || !refinement_cache.marked_for_coarsening[parent_idx]
-                                push!(set, FacetIndex(refinement_cache.children_updated_indices[child_neighbor[1]], child_neighbor[2]))
+                                push!(set, FacetIndex(refinement_cache.old_cell_to_new_cell_map[child_neighbor[1]], child_neighbor[2]))
                             else
                                 push!(set, FacetIndex(parent_idx, child_neighbor[2]))
                             end
@@ -225,7 +104,7 @@ function update_topology!(
                 for child_neighbor in child_neighbors
                     parent_idx = grid.kopp_cells[child_neighbor[1]].parent
                     if parent_idx < 0 || !refinement_cache.marked_for_coarsening[parent_idx]
-                        push!(set, FacetIndex(refinement_cache.children_updated_indices[child_neighbor[1]], child_neighbor[2]))
+                        push!(set, FacetIndex(refinement_cache.old_cell_to_new_cell_map[child_neighbor[1]], child_neighbor[2]))
                     else
                         push!(set, FacetIndex(parent_idx, child_neighbor[2]))
                     end
@@ -241,51 +120,32 @@ function update_topology!(
     return n_neighborhoods
 end
 
-function count_neighbors_update_indexing!(
+function _calc_interfaces_dict_prev(
     grid::KoppGrid{Dim},
-    topology::KoppTopology,
-    refinement_cache::KoppRefinementCache) where {Dim}
+    topology::KoppTopology) where {Dim}
     NFacets = 2 * Dim
-    temp_cell_facet_neighbors_offset = topology.cell_facet_neighbors_offset_prev
-    temp_cell_facet_neighbors_length = topology.cell_facet_neighbors_length_prev
-    n_neighborhoods = 0
-    ref_cell_neighborhood = get_ref_cell_neighborhood(getrefshape(getcelltype(grid.base_grid)))
-    for i in 1:length(grid.kopp_cells)
-        new_i = refinement_cache.children_updated_indices[i]
-        if refinement_cache.marked_for_refinement[new_i]
-            for new_seq in 1:2^Dim
-                for facet in 1:NFacets
-                    n_facet_neighbors = 0
-                    if ref_cell_neighborhood[new_seq][facet] == 0
-                        n_inherited_neighbors = count_inherited_neighbors(i, refinement_cache, facet, topology, grid, new_seq)
-                        n_facet_neighbors += n_inherited_neighbors
-                    else
-                        n_facet_neighbors += 1
-                    end
-                    topology.cell_facet_neighbors_offset[facet, new_i+new_seq] = n_facet_neighbors == 0 ? 0 : n_neighborhoods + 1
-                    topology.cell_facet_neighbors_length[facet, new_i+new_seq] = n_facet_neighbors == 0 ? 0 : n_facet_neighbors
-                    n_neighborhoods += n_facet_neighbors
-                end
-            end
-        else
-            for facet in 1:NFacets
-                n_facet_neighbors = 0
-                neighbors_offset = temp_cell_facet_neighbors_offset[facet, i]
-                neighbors_length = temp_cell_facet_neighbors_length[facet, i]
-                for neighbor in @view topology.neighbors_prev[neighbors_offset:neighbors_offset+neighbors_length-1]
-                    if refinement_cache.marked_for_refinement[refinement_cache.children_updated_indices[neighbor[1]]]
-                        n_facet_neighbors += 2^(Dim - 1)
-                    else
-                        n_facet_neighbors += 1
-                    end
-                end
-                topology.cell_facet_neighbors_offset[facet, new_i] = n_facet_neighbors == 0 ? 0 : n_neighborhoods + 1
-                topology.cell_facet_neighbors_length[facet, new_i] = n_facet_neighbors == 0 ? 0 : n_facet_neighbors
-                n_neighborhoods += n_facet_neighbors
-            end
-        end
+    ii = Ferrite.InterfaceIterator(grid, topology)
+    interfaces_dict_prev = OrderedSet{FacetIndex}()
+    for ic in ii
+        push!(interfaces_dict_prev, FacetIndex(Ferrite.cellid(ic.a), ic.a.current_facet_id))
     end
-    return n_neighborhoods
+    return interfaces_dict_prev
+end
+
+function _calc_interfaces_map(grid::KoppGrid{Dim},
+    topology::KoppTopology,
+    refinement_cache::KoppRefinementCache,
+    dict_prev::OrderedSet) where {Dim}
+    interface_index = 1
+    ii = Ferrite.InterfaceIterator(grid, topology)
+    for ic in ii
+        cell_idx = refinement_cache.new_cell_to_old_cell_map[Ferrite.cellid(ic.a)]
+        iszero(cell_idx) && (interface_index += 1; continue)
+        old_index = OrderedCollections.ht_keyindex(dict_prev.dict, FacetIndex(cell_idx, ic.a.current_facet_id), true)
+        (old_index<=0) && (interface_index += 1; continue)
+        refinement_cache.interfaces_data_updated_indices[old_index] = interface_index
+        interface_index += 1
+    end
 end
 
 function update_neighbors!(
@@ -298,7 +158,7 @@ function update_neighbors!(
     n_neighborhoods = 0
     ref_cell_neighborhood = get_ref_cell_neighborhood(getrefshape(getcelltype(grid.base_grid)))
     for (i, cell) in enumerate(grid.kopp_cells_prev)
-        new_i = refinement_cache.children_updated_indices[i]
+        new_i = refinement_cache.old_cell_to_new_cell_map[i]
         if refinement_cache.marked_for_refinement[new_i]
             for new_seq in 1:2^Dim
                 for facet in 1:NFacets
@@ -319,16 +179,16 @@ function update_neighbors!(
                 neighbors_offset = temp_cell_facet_neighbors_offset[facet, i]
                 neighbors_length = temp_cell_facet_neighbors_length[facet, i]
                 for neighbor in @view topology.neighbors_prev[neighbors_offset:neighbors_offset+neighbors_length-1]
-                    if refinement_cache.marked_for_refinement[refinement_cache.children_updated_indices[neighbor[1]]]
+                    if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor[1]]]
                         # TODO: double check if we use old or new index here
                         for (i, new_seq) in enumerate(Ferrite.reference_facets(getrefshape(getcelltype(grid.base_grid)))[neighbor[2]])
-                            topology.neighbors[n_neighborhoods + n_facet_neighbors + i] = FacetIndex(refinement_cache.children_updated_indices[neighbor[1]] + new_seq, get_ref_face_neighborhood(getrefshape(getcelltype(grid.base_grid)))[facet])
+                            topology.neighbors[n_neighborhoods + n_facet_neighbors + i] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor[1]] + new_seq, get_ref_face_neighborhood(getrefshape(getcelltype(grid.base_grid)))[facet])
                         end
                         n_facet_neighbors += 2^(Dim - 1)
 
                     else
                         n_facet_neighbors += 1
-                        topology.neighbors[n_neighborhoods + n_facet_neighbors] = FacetIndex(refinement_cache.children_updated_indices[neighbor[1]], neighbor[2])
+                        topology.neighbors[n_neighborhoods + n_facet_neighbors] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor[1]], neighbor[2])
                     end
                 end
                 topology.cell_facet_neighbors_offset[facet, new_i] = n_facet_neighbors == 0 ? 0 : n_neighborhoods + 1
@@ -343,15 +203,16 @@ end
 function update_cells!(
     grid::KoppGrid{Dim},
     refinement_cache::KoppRefinementCache) where Dim
-    for (old, new) in enumerate(refinement_cache.children_updated_indices)
+    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old cells
-        grid.kopp_cells[new] =  grid.kopp_cells[old]
+        grid.kopp_cells[new] =  grid.kopp_cells_prev[old]
     end
     for (cell_idx, cell) in enumerate(grid.kopp_cells)
         refinement_cache.marked_for_refinement[cell_idx] || continue
+        grid.kopp_cells[cell_idx] = KoppCell{Dim, Int}(cell.parent, cell.sequence, false) 
         for new_seq in 1 : 2^Dim
             child_idx = cell_idx + new_seq
-            grid.kopp_cells[child_idx] = KoppCell{Dim, Int}(cell_idx, (cell.sequence << (Dim + 1)) + new_seq)
+            grid.kopp_cells[child_idx] = KoppCell{Dim, Int}(cell_idx, (cell.sequence << (Dim + 1)) + new_seq, true)
         end
     end
 end
@@ -359,7 +220,7 @@ end
 function update_coarsened_cells!(
     grid::KoppGrid{Dim},
     refinement_cache::KoppRefinementCache) where Dim
-    for (old, new) in enumerate(refinement_cache.children_updated_indices)
+    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old cells
         new == 0 && continue
         grid.kopp_cells[new] =  grid.kopp_cells[old]
@@ -370,7 +231,7 @@ function update_root_idx!(
     grid::KoppGrid{Dim},
     topology::KoppTopology,
     refinement_cache::KoppRefinementCache) where Dim
-    for (old, new) in enumerate(refinement_cache.children_updated_indices)
+    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old cells
         topology.root_idx[new] =  topology.root_idx_prev[old]
     end
@@ -387,7 +248,7 @@ function update_coarsened_root_idx!(
     grid::KoppGrid{Dim},
     topology::KoppTopology,
     refinement_cache::KoppRefinementCache) where Dim
-    for (old, new) in enumerate(refinement_cache.children_updated_indices)
+    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old cells
         new == 0 && continue
         topology.root_idx[new] =  topology.root_idx_prev[old]
@@ -425,7 +286,7 @@ function count_inherited_neighbors(cell_idx::Int, refinement_cache::KoppRefineme
         # URGERNT TODO: find a way to enable next line without allocations
         # new_neighbor_children = circshift((flip_interface ? reverse(neighbor_children) : neighbor_children), shift)
         neighbor_local_seq = neighbor_cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * get_refinement_level(cell)))
-        if refinement_cache.marked_for_refinement[refinement_cache.children_updated_indices[neighbor_idx]]
+        if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
             if (get_refinement_level(neighbor_cell) > get_refinement_level(cell)) && findfirst(==(new_seq), cell_children) == findfirst(==(neighbor_local_seq), new_neighbor_children)
                 neighbors_count += length(neighbor_children)
                 continue
@@ -441,33 +302,6 @@ function count_inherited_neighbors(cell_idx::Int, refinement_cache::KoppRefineme
     return neighbors_count
 end
 
-function update_dofs!(
-    grid::KoppGrid{Dim},
-    refinement_cache::KoppRefinementCache,
-    dh::DofHandler,
-    temp_celldofs::Vector{Int},
-    temp_cell_dofs_offset::Vector{Int},
-    temp_cell_to_subdofhandler::Vector{Int}) where Dim
-    dh.cell_dofs_offset .= 0
-    for (old, new) in enumerate(refinement_cache.children_updated_indices)
-        # copy old dofhander vectors
-        dh.cell_dofs_offset[new] = temp_cell_dofs_offset[old]
-        dh.cell_dofs[dh.cell_dofs_offset[new] : dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1] .= @view temp_celldofs[temp_cell_dofs_offset[old] : temp_cell_dofs_offset[old] + dh.subdofhandlers[1].ndofs_per_cell - 1]
-        dh.cell_to_subdofhandler[new] = temp_cell_to_subdofhandler[old]
-    end
-    for (cell_idx, cell) in enumerate(grid.kopp_cells)
-        refinement_cache.marked_for_refinement[cell_idx] || continue
-        for new_seq in 1 : 2^Dim
-            child_idx = cell_idx + new_seq
-            # DofHandler add new dofs and offsets
-            # For DG only
-            dh.cell_dofs_offset[child_idx] = maximum(dh.cell_dofs_offset) + dh.subdofhandlers[1].ndofs_per_cell
-            dh.cell_to_subdofhandler[child_idx] = dh.cell_to_subdofhandler[cell_idx]
-            dh.cell_dofs[dh.cell_dofs_offset[child_idx] : dh.cell_dofs_offset[child_idx] + dh.subdofhandlers[1].ndofs_per_cell - 1] .= (dh.ndofs + 1) : (dh.ndofs + dh.subdofhandlers[1].ndofs_per_cell)
-            dh.ndofs += dh.subdofhandlers[1].ndofs_per_cell
-        end
-    end
-end
 
 function update_coarsened_dofs!(
     grid::KoppGrid{Dim},
@@ -477,7 +311,7 @@ function update_coarsened_dofs!(
     temp_cell_dofs_offset::Vector{Int},
     temp_cell_to_subdofhandler::Vector{Int}) where Dim
     # dh.cell_dofs_offset .= 0
-    for (old, new) in enumerate(refinement_cache.children_updated_indices)
+    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old dofhander vectors
         new == 0 && continue
         dh.cell_dofs_offset[new] = temp_cell_dofs_offset[old]
@@ -485,13 +319,13 @@ function update_coarsened_dofs!(
     for (cell_idx, cell) in enumerate(grid.kopp_cells)
         refinement_cache.marked_for_coarsening[cell_idx] || continue
         for (other_cell_idx, other_cell) in enumerate(grid.kopp_cells)
-            refinement_cache.children_updated_indices[other_cell_idx] == 0 && continue
+            refinement_cache.old_cell_to_new_cell_map[other_cell_idx] == 0 && continue
             dh.cell_dofs_offset[other_cell_idx] <= temp_cell_dofs_offset[cell_idx] && continue
             dh.cell_dofs_offset[other_cell_idx] -= dh.subdofhandlers[1].ndofs_per_cell * (2^Dim)
             dh.ndofs -= dh.subdofhandlers[1].ndofs_per_cell * (2^Dim)
         end
     end
-    for (old, new) in enumerate(refinement_cache.children_updated_indices)
+    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old dofhander vectors
         new == 0 && continue
         dh.cell_dofs[dh.cell_dofs_offset[new] : dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1] .= @view temp_celldofs[temp_cell_dofs_offset[old] : temp_cell_dofs_offset[old] + dh.subdofhandlers[1].ndofs_per_cell - 1]
@@ -534,57 +368,7 @@ function update_koppcache!(
     kopp_values::ValuesCache,
     dh::DofHandler,
     NFacets::Int) where Dim
-    for (old, new) in enumerate(refinement_cache.children_updated_indices)
-        # copy old cells
-        kopp_cache.cell_matrices[:,:,new] .= @view kopp_cache.cell_matrices[:,:,old]
-        old != new && (kopp_cache.cell_matrices[:,:,new] .= 0.0)
-    end
-    for cell_cache in Ferrite.CellIterator(grid, UpdateFlags(false, true, true))
-        cell_idx = cell_cache.cellid
-        cell = getcells(grid, cell_idx)
-        # Calculate new interfaces
-        if refinement_cache.marked_for_refinement[cell_idx]
-            parent_offset = dh.cell_dofs_offset[cell_idx]
-            parent_sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]]
-            parent_dofs = @view dh.cell_dofs[parent_offset : parent_offset + parent_sdh.ndofs_per_cell - 1]
-            for new_seq in 1 : 2^Dim
-                child_idx = cell_idx + new_seq
-                # DofHandler add new dofs and offsets
-                # For DG only
-                offset = dh.cell_dofs_offset[child_idx]
-                sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[child_idx]]
-                dofs = @view dh.cell_dofs[offset : offset + sdh.ndofs_per_cell - 1]
-                interpolate_solution!(Ferrite.RefHypercube{Dim}, kopp_cache.u, dofs, parent_dofs, new_seq)
-            end
-        end
-        if all(x -> x == 0.0, @view kopp_cache.cell_matrices[:,:,cell_idx])
-            reinit!(kopp_values.cell_values, cell_cache)
-            assemble_element_matrix!((@view kopp_cache.cell_matrices[:,:,cell_idx]), kopp_values)
-        end
-    end
-    ninterfaces = 1
-    facet_idx = 1
-    nneighbors = 1
-    interface_index = 1
-    ii = Ferrite.InterfaceIterator(dh, topology)
-    for (facet_idx, nneighbors, ninterfaces) in ii
-        interface_cache = ii.cache
-        _facet_idx = nneighbors == 1 ? facet_idx - 1 : facet_idx
-        cell_idx = (_facet_idx - 1) ÷ (2*Dim) + 1
-        facet_a = (_facet_idx - 1) % (2*Dim) + 1
-        neighbor = FacetIndex(interface_cache.b.cc.cellid, interface_cache.b.current_facet_id)
-        kopp_cache.interface_matrix_index[topology.cell_facet_neighbors_offset[facet_a, cell_idx] + nneighbors - 1] = ninterfaces
-        rng  = topology.cell_facet_neighbors_offset[neighbor[2], neighbor[1]] : topology.cell_facet_neighbors_offset[neighbor[2], neighbor[1]] + topology.cell_facet_neighbors_length[neighbor[2], neighbor[1]] - 1
-        # @assert any(x -> x == 0, @view kopp_cache.interface_matrix_index[rng])
-        for j in rng
-            kopp_cache.interface_matrix_index[j] != 0 && continue
-            kopp_cache.interface_matrix_index[j] = ninterfaces
-            break
-        end
-        reinit!(kopp_values.interface_values, interface_cache, topology)
-        assemble_interface_matrix!((@view kopp_cache.interface_matrices[:,:,interface_index]), kopp_values)
-        interface_index += 1
-    end
+    
 end
 
 function update_coarsened_koppcache!(
@@ -597,7 +381,7 @@ function update_coarsened_koppcache!(
     temp_dh::DofHandler,
     NFacets::Int,
     Dim::Int)
-    @inbounds for (old, new) in enumerate(refinement_cache.children_updated_indices)
+    @inbounds for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old cells
         new == 0 && continue
         kopp_cache.cell_matrices[:,:,new] .= @view kopp_cache.cell_matrices[:,:,old]
@@ -645,7 +429,7 @@ function add_inherited_neighbors!(n_neighborhoods::Int, cell_idx::Int, refinemen
         neighbor_idx = neighbor[1]
         neighbor_facet = neighbor[2]
         cell = grid.kopp_cells[cell_idx]
-        neighbor_cell = grid.kopp_cells[refinement_cache.children_updated_indices[neighbor_idx]]
+        neighbor_cell = grid.kopp_cells[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
         cell_facet_orientation_info = topology.root_facet_orientation_info[topology.root_idx_prev[cell_idx]+facet-1]
         neighbor_facet_orientation_info = topology.root_facet_orientation_info[topology.root_idx_prev[neighbor_idx]+neighbor_facet-1]
         cell_children = Ferrite.reference_facets(getrefshape(getcelltype(grid.base_grid)))[facet]
@@ -656,18 +440,18 @@ function add_inherited_neighbors!(n_neighborhoods::Int, cell_idx::Int, refinemen
         # URGERNT TODO: find a way to enable next line without allocations
         # new_neighbor_children = circshift((flip_interface ? reverse(neighbor_children) : neighbor_children), shift)
         neighbor_local_seq = neighbor_cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * get_refinement_level(cell)))
-        if refinement_cache.marked_for_refinement[refinement_cache.children_updated_indices[neighbor_idx]]
+        if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
             if (get_refinement_level(neighbor_cell) > get_refinement_level(cell)) && findfirst(==(new_seq), cell_children) == findfirst(==(neighbor_local_seq), new_neighbor_children)
-                topology.neighbors[n_neighborhoods + neighbors_count + 1 : n_neighborhoods + neighbors_count + length(neighbor_children)] = [FacetIndex(refinement_cache.children_updated_indices[neighbor_idx] + neighbor_child, neighbor_facet) for neighbor_child in neighbor_children]
+                topology.neighbors[n_neighborhoods + neighbors_count + 1 : n_neighborhoods + neighbors_count + length(neighbor_children)] = [FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx] + neighbor_child, neighbor_facet) for neighbor_child in neighbor_children]
                 neighbors_count += length(neighbor_children)
                 continue
             else
-                topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.children_updated_indices[neighbor_idx] + new_neighbor_children[findfirst(==(new_seq), cell_children)], neighbor_facet)
+                topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx] + new_neighbor_children[findfirst(==(new_seq), cell_children)], neighbor_facet)
                 neighbors_count += 1
                 continue
             end
         else
-            topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.children_updated_indices[neighbor_idx], neighbor_facet)
+            topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx], neighbor_facet)
             neighbors_count += 1
             continue
         end
