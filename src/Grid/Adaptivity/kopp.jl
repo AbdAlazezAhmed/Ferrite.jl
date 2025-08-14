@@ -266,11 +266,11 @@ end
 function to_ferrite_grid(grid::KoppGrid{2})
     cells = Quadrilateral[]
     nodes = Node{2, Float64}[]
-    for cc in CellIterator(grid)
+    for cc in CellIterator(grid, OrderedSet(1:length(grid.kopp_cells)))
         push!(nodes, Node.(getcoordinates(cc))...)
     end
     unique!(nodes)
-    for cc in CellIterator(grid)
+    for cc in CellIterator(grid, OrderedSet(1:length(grid.kopp_cells)))
         idx1 = findfirst(x -> x == Node(getcoordinates(cc)[1]), nodes)
         idx2 = findfirst(x -> x == Node(getcoordinates(cc)[2]), nodes)
         idx3 = findfirst(x -> x == Node(getcoordinates(cc)[3]), nodes)
@@ -281,4 +281,3 @@ function to_ferrite_grid(grid::KoppGrid{2})
 
     return Ferrite.Grid(cells, nodes)
 end
-

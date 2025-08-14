@@ -538,49 +538,49 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
 #                     (FacetIndex(1,2), FacetIndex[FacetIndex(2,4)]),
 #                     (FacetIndex(1,3), FacetIndex[FacetIndex(4,1)]),
 #                     (FacetIndex(1,4), FacetIndex[]),
-                    
+
 #                     # ---- cell 2 ----
 #                     (FacetIndex(2,1), FacetIndex[]),
 #                     (FacetIndex(2,2), FacetIndex[FacetIndex(3,4)]),
 #                     (FacetIndex(2,3), FacetIndex[FacetIndex(5,1)]),
 #                     (FacetIndex(2,4), FacetIndex[FacetIndex(1,2)]),
-                    
+
 #                     # ---- cell 3 ----
 #                     (FacetIndex(3,1), FacetIndex[]),
 #                     (FacetIndex(3,2), FacetIndex[]),
 #                     (FacetIndex(3,3), FacetIndex[FacetIndex(6,1)]),
 #                     (FacetIndex(3,4), FacetIndex[FacetIndex(2,2)]),
-                    
+
 #                     # ---- cell 4 ----
 #                     (FacetIndex(4,1), FacetIndex[FacetIndex(1,3)]),
 #                     (FacetIndex(4,2), FacetIndex[FacetIndex(5,4)]),
 #                     (FacetIndex(4,3), FacetIndex[FacetIndex(7,1)]),
 #                     (FacetIndex(4,4), FacetIndex[]),
-                    
+
 #                     # ---- cell 5 ----
 #                     (FacetIndex(5,1), FacetIndex[FacetIndex(2,3)]),
 #                     (FacetIndex(5,2), FacetIndex[FacetIndex(6,4)]),
 #                     (FacetIndex(5,3), FacetIndex[FacetIndex(8,1)]),
 #                     (FacetIndex(5,4), FacetIndex[FacetIndex(4,2)]),
-                    
+
 #                     # ---- cell 6 ----
 #                     (FacetIndex(6,1), FacetIndex[FacetIndex(3,3)]),
 #                     (FacetIndex(6,2), FacetIndex[]),
 #                     (FacetIndex(6,3), FacetIndex[FacetIndex(9,1)]),
 #                     (FacetIndex(6,4), FacetIndex[FacetIndex(5,2)]),
-                    
+
 #                     # ---- cell 7 ----
 #                     (FacetIndex(7,1), FacetIndex[FacetIndex(4,3)]),
 #                     (FacetIndex(7,2), FacetIndex[FacetIndex(8,4)]),
 #                     (FacetIndex(7,3), FacetIndex[]),
 #                     (FacetIndex(7,4), FacetIndex[]),
-                    
+
 #                     # ---- cell 8 ----
 #                     (FacetIndex(8,1), FacetIndex[FacetIndex(5,3)]),
 #                     (FacetIndex(8,2), FacetIndex[FacetIndex(9,4)]),
 #                     (FacetIndex(8,3), FacetIndex[]),
 #                     (FacetIndex(8,4), FacetIndex[FacetIndex(7,2)]),
-                    
+
 #                     # ---- cell 9 ----
 #                     (FacetIndex(9,1), FacetIndex[FacetIndex(6,3)]),
 #                     (FacetIndex(9,2), FacetIndex[]),
@@ -613,32 +613,32 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
 #                 end
 #             end
 #             @testset "FacetIterator" begin
-                
+
 #             end
 #             @testset "InterfaceIterator" begin
 #                 interfaces_vector = [
 #                     # ---- cell 1 --- (Escaped the loop!)
 #                     (FacetIndex(1,2), FacetIndex(2,4)),
 #                     (FacetIndex(1,3), FacetIndex(4,1)),
-            
+
 #                     # ---- cell 2 --
 #                     (FacetIndex(2,2), FacetIndex(3,4)),
 #                     (FacetIndex(2,3), FacetIndex(5,1)),
-            
+
 #                     # ---- cell 3 --
 #                     (FacetIndex(3,3), FacetIndex(6,1)),
-            
+
 #                     # ---- cell 4 --
 #                     (FacetIndex(4,2), FacetIndex(5,4)),
 #                     (FacetIndex(4,3), FacetIndex(7,1)),
-            
+
 #                     # ---- cell 5 --
 #                     (FacetIndex(5,2), FacetIndex(6,4)),
 #                     (FacetIndex(5,3), FacetIndex(8,1)),
-            
+
 #                     # ---- cell 6 --
 #                     (FacetIndex(6,3), FacetIndex(9,1)),
-            
+
 #                     # ---- cell 7 --
 #                     (FacetIndex(7,2), FacetIndex(8,4)),
 #                     # ---- cell 8 --
@@ -652,7 +652,7 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
 #                     @test ic.b.current_facet_id == interfaces_vector[i][2][2]
 #                     i += 1
 #                 end
-#             end 
+#             end
 #         end
 #         # @testset "1 levels" begin
 #         #     @testset "Topology" begin
@@ -662,49 +662,49 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
 #         #             (FacetIndex(1,2), FacetIndex[FacetIndex(2,4)]),
 #         #             (FacetIndex(1,3), FacetIndex[FacetIndex(4,1)]),
 #         #             (FacetIndex(1,4), FacetIndex[]),
-                    
+
 #         #             # ---- cell 3 ----
 #         #             (FacetIndex(2,1), FacetIndex[]),
 #         #             (FacetIndex(2,2), FacetIndex[FacetIndex(3,4)]),
 #         #             (FacetIndex(2,3), FacetIndex[FacetIndex(5,1)]),
 #         #             (FacetIndex(2,4), FacetIndex[FacetIndex(1,2)]),
-                    
+
 #         #             # ---- cell 4 ----
 #         #             (FacetIndex(3,1), FacetIndex[]),
 #         #             (FacetIndex(3,2), FacetIndex[]),
 #         #             (FacetIndex(3,3), FacetIndex[FacetIndex(6,1)]),
 #         #             (FacetIndex(3,4), FacetIndex[FacetIndex(2,2)]),
-                    
+
 #         #             # ---- cell 5 ----
 #         #             (FacetIndex(4,1), FacetIndex[FacetIndex(1,3)]),
 #         #             (FacetIndex(4,2), FacetIndex[FacetIndex(5,4)]),
 #         #             (FacetIndex(4,3), FacetIndex[FacetIndex(7,1)]),
 #         #             (FacetIndex(4,4), FacetIndex[]),
-                    
+
 #         #             # ---- cell 6 ----
 #         #             (FacetIndex(5,1), FacetIndex[FacetIndex(2,3)]),
 #         #             (FacetIndex(5,2), FacetIndex[FacetIndex(6,4)]),
 #         #             (FacetIndex(5,3), FacetIndex[FacetIndex(8,1)]),
 #         #             (FacetIndex(5,4), FacetIndex[FacetIndex(4,2)]),
-                    
+
 #         #             # ---- cell 7 ----
 #         #             (FacetIndex(6,1), FacetIndex[FacetIndex(3,3)]),
 #         #             (FacetIndex(6,2), FacetIndex[]),
 #         #             (FacetIndex(6,3), FacetIndex[FacetIndex(9,1)]),
 #         #             (FacetIndex(6,4), FacetIndex[FacetIndex(5,2)]),
-                    
+
 #         #             # ---- cell 8 ----
 #         #             (FacetIndex(7,1), FacetIndex[FacetIndex(4,3)]),
 #         #             (FacetIndex(7,2), FacetIndex[FacetIndex(8,4)]),
 #         #             (FacetIndex(7,3), FacetIndex[]),
 #         #             (FacetIndex(7,4), FacetIndex[]),
-                    
+
 #         #             # ---- cell 9 ----
 #         #             (FacetIndex(8,1), FacetIndex[FacetIndex(5,3)]),
 #         #             (FacetIndex(8,2), FacetIndex[FacetIndex(9,4)]),
 #         #             (FacetIndex(8,3), FacetIndex[]),
 #         #             (FacetIndex(8,4), FacetIndex[FacetIndex(7,2)]),
-                    
+
 #         #             # ---- cell 10 ----
 #         #             (FacetIndex(9,1), FacetIndex[FacetIndex(6,3)]),
 #         #             (FacetIndex(9,2), FacetIndex[]),
@@ -737,32 +737,32 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
 #         #         end
 #         #     end
 #         #     @testset "FacetIterator" begin
-                
+
 #         #     end
 #         #     @testset "InterfaceIterator" begin
 #         #         interfaces_vector = [
 #         #             # ---- cell 1 --- (Escaped the loop!)
 #         #             (FacetIndex(1,2), FacetIndex(2,4)),
 #         #             (FacetIndex(1,3), FacetIndex(4,1)),
-            
+
 #         #             # ---- cell 2 --
 #         #             (FacetIndex(2,2), FacetIndex(3,4)),
 #         #             (FacetIndex(2,3), FacetIndex(5,1)),
-            
+
 #         #             # ---- cell 3 --
 #         #             (FacetIndex(3,3), FacetIndex(6,1)),
-            
+
 #         #             # ---- cell 4 --
 #         #             (FacetIndex(4,2), FacetIndex(5,4)),
 #         #             (FacetIndex(4,3), FacetIndex(7,1)),
-            
+
 #         #             # ---- cell 5 --
 #         #             (FacetIndex(5,2), FacetIndex(6,4)),
 #         #             (FacetIndex(5,3), FacetIndex(8,1)),
-            
+
 #         #             # ---- cell 6 --
 #         #             (FacetIndex(6,3), FacetIndex(9,1)),
-            
+
 #         #             # ---- cell 7 --
 #         #             (FacetIndex(7,2), FacetIndex(8,4)),
 #         #             # ---- cell 8 --
@@ -776,7 +776,7 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
 #         #             @test ic.b.current_facet_id == interfaces_vector[i][2][2]
 #         #             i += 1
 #         #         end
-#         #     end 
+#         #     end
 #         # end
 #     end
 # end
@@ -825,13 +825,36 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
     sync = LTSAMRSynchronizer(grid, dh, lts_values, refinement_cache, topology, 0.1)
     u = sync.data_stores[4].data
     Ferrite.apply_analytical!(u, dh, :u, x -> x[1]^2)
-    refine!(grid, topology, refinement_cache, sync, Set([CellIndex(1)]))
+    Ferrite.apply_analytical!(sync.data_stores_prev[4].data, dh, :u, x -> x[1]^2)
+    refine!(grid, topology, refinement_cache, sync, Set([
+        CellIndex(2),
+        CellIndex(6),
+        # CellIndex(5),
+        # CellIndex(9)
+        ]))
+
+    refine!(grid, topology, refinement_cache, sync, Set([
+        CellIndex(5),
+        CellIndex(14),
+        ]))
+
+    coarsen!(grid, topology, refinement_cache, sync, Set([
+        CellIndex(6),
+        CellIndex(7),
+        CellIndex(8),
+        CellIndex(9),
+        ]))
+        # refine!(grid, topology, refinement_cache, sync, Set([
+            # CellIndex(18),
+            # ]))
     fgrid = to_ferrite_grid(grid)
-    display(fgrid.nodes)
-    display(fgrid.cells)
-    display(grid.kopp_cells)
-    display(u)
+    dh2 = deepcopy(sync.dh)
+    resize!(dh2.grid.cells, length(fgrid.cells))
+    dh2.grid.cells .= fgrid.cells
+    resize!(dh2.grid.nodes, length(fgrid.nodes))
+    dh2.grid.nodes .= fgrid.nodes
+    @show u
     VTKGridFile("TTTTTTTT", fgrid) do vtk
-        write_solution(vtk, sync.dh, ones(52), "_")
+        write_solution(vtk, dh2, u, "_")
     end;
 end

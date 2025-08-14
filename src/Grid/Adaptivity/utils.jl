@@ -205,16 +205,19 @@ function update_cells!(
     refinement_cache::KoppRefinementCache) where Dim
     for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old cells
-        grid.kopp_cells[new] =  grid.kopp_cells_prev[old]
+        old_cell = grid.kopp_cells_prev[old]
+        @show old_cell.parent
+        grid.kopp_cells[new] =  KoppCell{Dim, Int}((old_cell.parent > 0 ? refinement_cache.old_cell_to_new_cell_map[old_cell.parent] : old_cell.parent) , old_cell.sequence, old_cell.isleaf)
     end
     for (cell_idx, cell) in enumerate(grid.kopp_cells)
         refinement_cache.marked_for_refinement[cell_idx] || continue
-        grid.kopp_cells[cell_idx] = KoppCell{Dim, Int}(cell.parent, cell.sequence, false) 
+        grid.kopp_cells[cell_idx] = KoppCell{Dim, Int}(cell.parent, cell.sequence, false)
         for new_seq in 1 : 2^Dim
             child_idx = cell_idx + new_seq
             grid.kopp_cells[child_idx] = KoppCell{Dim, Int}(cell_idx, (cell.sequence << (Dim + 1)) + new_seq, true)
         end
     end
+    @show grid.kopp_cells
 end
 
 function update_coarsened_cells!(
@@ -346,8 +349,9 @@ end
 
 @generated function get_child_weighted_dofs(::Type{T}) where {Dim, T <: Ferrite.RefHypercube{Dim}}
     ip = Lagrange{T, 1}()
-    coords = Ferrite.reference_coordinates(ip)
-    ntuple(seq -> (map!(node -> (node + coords[seq])/2, coords, coords);
+    ntuple(seq -> (
+    coords = Ferrite.reference_coordinates(ip);
+    map!(node -> (node + coords[seq])/2, coords, coords);
     nshape_functions = length(coords);
     # TODO URGENT check if rows and cols are not switched
     SMatrix{nshape_functions, nshape_functions, Float64}(Ferrite.reference_shape_value(ip, coords[child_node], i) for i in 1:nshape_functions, child_node in 1:nshape_functions)),2^Dim)
@@ -357,7 +361,8 @@ function interpolate_solution!(refshape::Type{<:Ferrite.RefHypercube}, u::Vector
     u_parent = @view u[parent_dofs]
     weights = get_child_weighted_dofs(refshape)[seq]
     for i in 1:length(dofs)
-        u[dofs[i]] = u_parent ⋅ (@view weights[i,:])
+        @show weights[:,i]
+        u[dofs[i]] = u_parent ⋅ (@view weights[:,i])
     end
 end
 function update_koppcache!(
@@ -368,7 +373,7 @@ function update_koppcache!(
     kopp_values::ValuesCache,
     dh::DofHandler,
     NFacets::Int) where Dim
-    
+
 end
 
 function update_coarsened_koppcache!(
@@ -474,7 +479,7 @@ end
 end
 
 function _process_seq(coords::NTuple{NNodes, NodeType}, seq::TInt) where {NodeType, TInt, NNodes}
-    Dim = TInt(log2(NNodes))
+    Dim = TInt(log2(NNodes)) # Only first order
     level::TInt = 0
     nbits::TInt = Dim + 1
     mask = (1 << nbits) - 1 # Does this need to be T too?
@@ -491,6 +496,25 @@ function _process_seq(coords::NTuple{NNodes, NodeType}, seq::TInt) where {NodeTy
     end
     return Tuple(coord_new)
 end
+
+function _process_seq(Dim, coords::NTuple{NNodes, NodeType}, seq::TInt) where {NodeType, TInt, NNodes}
+    level::TInt = 0
+    nbits::TInt = Dim + 1
+    mask = (1 << nbits) - 1 # Does this need to be T too?
+    maximum_level::TInt = sizeof(TInt)*8 ÷ nbits # Maybe use ÷ ?
+    coord_new = MVector{NNodes, NodeType}(coords)
+    coord_new_temp = MVector{NNodes, NodeType}(coords)
+    @inbounds for level::TInt in maximum_level:-1:0 # There should be an easier way
+        local_seq::TInt = (seq & (mask << (nbits * level)) ) >> (nbits * level )
+        local_seq == 0 && continue
+        @inbounds for (i, coord) in enumerate(coord_new_temp)
+            coord_new[i] = NodeType((coord.x + coord_new_temp[local_seq].x)/2)
+        end
+        coord_new_temp .= coord_new
+    end
+    return Tuple(coord_new)
+end
+
 
 function _transform_to_parent!(coords::AbstractVector, node_coords, seq::T) where {T}
     Dim = 2

@@ -6,7 +6,7 @@ function _resize_marked_for_refinement!(
     new_length = length(grid.kopp_cells) + (2^Dim) * n_refined_cells
     resize!(refinement_cache.marked_for_refinement, new_length)
     resize!(refinement_cache.new_cell_to_old_cell_map, new_length)
-    
+
     refinement_cache.marked_for_refinement[length(grid.kopp_cells) + 1 : end] .= false
     refinement_cache.new_cell_to_old_cell_map .= 0
     return nothing
@@ -98,6 +98,33 @@ function count_neighbors_update_indexing!(
     end
     return n_neighborhoods
 end
+# TODO: URGENT OPTIMIZE
+function get_ref_inherited_dofs!(children_dofs, parent_dofs, interpolation::Interpolation)
+    coords = Ferrite.reference_coordinates(interpolation)
+    Dim = Ferrite.getrefdim(interpolation)
+    root_coords = ntuple(i -> Node(coords[i]), length(coords))
+    dofs = zeros(Int, Ferrite.getnbasefunctions(interpolation) * 2^(Dim))
+    j = 0
+    for i in 1:2^Dim
+        child_coords = _process_seq(Dim, root_coords, i)
+        for dof in child_coords
+            j+=1
+            x = findfirst(x -> x == dof, root_coords)
+            isnothing(x) && continue
+            dofs[j] = x
+        end
+    end
+    new_dofs = maximum(parent_dofs)
+    for i in eachindex(children_dofs)
+        if iszero(dofs[i])
+            children_dofs[i] =  new_dofs + 1
+            new_dofs += 1
+        else
+            children_dofs[i] = parent_dofs[dofs[i]]
+        end
+    end
+    children_dofs
+end
 
 function update_dofs!(
     grid::KoppGrid{Dim},
@@ -110,19 +137,45 @@ function update_dofs!(
     for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old dofhander vectors
         dh.cell_dofs_offset[new] = temp_cell_dofs_offset[old]
+    end
+    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+        # copy old dofhander vectors
+        ndofs_per_cell = dh.subdofhandlers[temp_cell_to_subdofhandler[old]].ndofs_per_cell
+        if refinement_cache.marked_for_refinement[new]
+            dh.cell_dofs_offset[new + 1 : end] .+= (2^Dim) * ndofs_per_cell
+        end
         dh.cell_dofs[dh.cell_dofs_offset[new] : dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1] .= @view temp_celldofs[temp_cell_dofs_offset[old] : temp_cell_dofs_offset[old] + dh.subdofhandlers[1].ndofs_per_cell - 1]
         dh.cell_to_subdofhandler[new] = temp_cell_to_subdofhandler[old]
     end
-    for (cell_idx, cell) in enumerate(grid.kopp_cells)
+    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+        # copy old dofhander vectors
+        ndofs_per_cell = dh.subdofhandlers[temp_cell_to_subdofhandler[old]].ndofs_per_cell
+        if refinement_cache.marked_for_refinement[new]
+            dh.cell_dofs[dh.cell_dofs_offset[new] + (2^Dim + 1) * ndofs_per_cell : end] .+= (2^Dim - 1) * ndofs_per_cell
+        end
+    end
+    @info dh.cell_dofs
+    @info dh.cell_dofs_offset
+    @info refinement_cache.marked_for_refinement
+    for (old, cell_idx) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+        @info cell_idx
         refinement_cache.marked_for_refinement[cell_idx] || continue
+        @info cell_idx
+
+        ndofs_per_cell = dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]].ndofs_per_cell
         for new_seq in 1 : 2^Dim
             child_idx = cell_idx + new_seq
             # DofHandler add new dofs and offsets
             # For DG only
-            dh.cell_dofs_offset[child_idx] = maximum(dh.cell_dofs_offset) + dh.subdofhandlers[1].ndofs_per_cell
+            dh.cell_dofs_offset[child_idx] = dh.cell_dofs_offset[cell_idx] + new_seq * ndofs_per_cell
             dh.cell_to_subdofhandler[child_idx] = dh.cell_to_subdofhandler[cell_idx]
-            dh.cell_dofs[dh.cell_dofs_offset[child_idx] : dh.cell_dofs_offset[child_idx] + dh.subdofhandlers[1].ndofs_per_cell - 1] .= (dh.ndofs + 1) : (dh.ndofs + dh.subdofhandlers[1].ndofs_per_cell)
             dh.ndofs += dh.subdofhandlers[1].ndofs_per_cell
         end
+        children_dofs = @view dh.cell_dofs[dh.cell_dofs_offset[cell_idx+1] : dh.cell_dofs_offset[cell_idx+1] + 2^Dim * ndofs_per_cell - 1]
+        parent_dofs = @view dh.cell_dofs[dh.cell_dofs_offset[cell_idx] : dh.cell_dofs_offset[cell_idx + 1] - 1]
+        # ASSUMPTION: single field
+        get_ref_inherited_dofs!(children_dofs, parent_dofs, dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]].field_interpolations[1])
     end
+    @info dh.cell_dofs
+    @info dh.cell_dofs_offset
 end
