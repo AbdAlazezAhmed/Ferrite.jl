@@ -34,6 +34,7 @@ include("iterators.jl")
 include("synchronizers.jl")
 include("utils.jl")
 include("refinement.jl")
+include("coarsening.jl")
 
 
 function get_refinement_level(cell::KoppCell{Dim, T}) where {Dim, T}
@@ -126,8 +127,6 @@ function refine!(
     new_length = length(grid.kopp_cells)+(2^Dim)*n_refined_cells
     # we need to resize this one early
     _resize_marked_for_refinement!(grid, refinement_cache, cellset)
-    n_refined_interfaces = 0
-    NFacets = 2*Dim
     refinement_cache.old_cell_to_new_cell_map .= 1:length(refinement_cache.old_cell_to_new_cell_map)
     # Counting how many refined cells and interfaces and calculating the new index
     @time "_update_refinement_cache_isactive" _update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
@@ -142,7 +141,7 @@ function refine!(
 
     # Resizing the vectors
 
-
+    @show n_neighborhoods
     _resize_bunch_of_stuff!(grid, topology, n_neighborhoods, new_length)
 
     update_cells!(grid, refinement_cache)
@@ -189,40 +188,37 @@ function coarsen!(
         grid::KoppGrid{Dim},
         topology::KoppTopology,
         refinement_cache::KoppRefinementCache,
-        kopp_cache::AbstractAMRSynchronizer,
-        cellset::Set{CellIndex},
-        dh::DofHandler) where Dim
+        sync::AbstractAMRSynchronizer,
+        cellset::Set{CellIndex}
+        ) where Dim
+    @time  "_calc_interfaces_dict_prev" interfaces_dict_prev = _calc_interfaces_dict_prev(grid, topology)
     n_coarsened_cells = length(cellset)
     new_length = length(grid.kopp_cells)-(2^Dim)*n_coarsened_cells
     # we need to resize this one early
     __resize_marked_for_refinement!(grid, refinement_cache, cellset)
-    # n_refined_interfaces = 0
-    NFacets = 2*Dim
     refinement_cache.old_cell_to_new_cell_map .= 1:length(refinement_cache.old_cell_to_new_cell_map)
     # Counting how many refined cells and interfaces and calculating the new index
-    __update_refinement_cache_isactive!(grid, topology, refinement_cache, kopp_cache, cellset, dh)
+    @time "__update_refinement_cache_isactive" __update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
 
-    temp_grid = deepcopy(grid)
     _resize_topology!(topology, new_length, Val(Dim))
 
     zero_topology!(topology)
 
-    n_neighborhoods = update_topology!(grid, topology, refinement_cache)
+    n_neighborhoods = _count_neighbors_update_indexing!(grid, topology, refinement_cache)
+    sync_amr_coarsening_forward!(grid, sync, refinement_cache, n_coarsened_cells, n_neighborhoods)
 
-    # # Resizing the vectors
-    temp_celldofs = copy(dh.cell_dofs)
-    temp_cell_dofs_offset = copy(dh.cell_dofs_offset)
-    temp_cell_to_subdofhandler = copy(dh.cell_to_subdofhandler)
 
-    ndofs_old = dh.ndofs
-
-    resize!(topology.neighbors, n_neighborhoods)
-   resize!(topology.root_idx, new_length)
+    _resize_bunch_of_stuff!(grid, topology, n_neighborhoods, new_length)
 
     update_coarsened_cells!(grid, refinement_cache)
-    resize!(grid.kopp_cells, new_length)
 
     update_coarsened_root_idx!(grid, topology, refinement_cache)
+
+    sync_amr_coarsening_backward!(sync, refinement_cache, grid, topology)
+
+    resize!(refinement_cache.old_cell_to_new_cell_map, new_length)
+    resize!(refinement_cache.marked_for_refinement, new_length)
+    resize!(refinement_cache.marked_for_coarsening, new_length)
 
     # update_coarsened_dofs!(grid, refinement_cache, dh, temp_celldofs, temp_cell_dofs_offset, temp_cell_to_subdofhandler)
     # resize!(dh.cell_dofs, new_length * dh.subdofhandlers[1].ndofs_per_cell)
@@ -251,9 +247,6 @@ function coarsen!(
     copy!(topology.root_idx_prev, topology.root_idx)
 
     # # # # resize refinement cache
-    resize!(refinement_cache.old_cell_to_new_cell_map, new_length)
-    resize!(refinement_cache.marked_for_coarsening, new_length)
-    resize!(refinement_cache.marked_for_refinement, new_length)
     # resize!(refinement_cache.interfaces_updated_indices, length(kopp_cache.interface_matrices) + n_refined_interfaces * (2^(Dim-1) - 1))
     refinement_cache.marked_for_coarsening .= false
     return nothing
@@ -276,7 +269,6 @@ function to_ferrite_grid(grid::KoppGrid{2})
         idx3 = findfirst(x -> x == Node(getcoordinates(cc)[3]), nodes)
         idx4 = findfirst(x -> x == Node(getcoordinates(cc)[4]), nodes)
         push!(cells, Quadrilateral((idx1, idx2, idx3, idx4)))
-        @info cellid(cc)
     end
 
     return Ferrite.Grid(cells, nodes)
