@@ -23,8 +23,8 @@ struct KoppRefinementCache{IntT <:Int}
     new_cell_to_old_cell_map::Vector{IntT}
     interfaces_updated_indices::Vector{IntT}
     interfaces_data_updated_indices::Vector{IntT}
-    marked_for_refinement::BitVector
-    marked_for_coarsening::BitVector
+    marked_for_refinement::Vector{Bool} #BitVector
+    marked_for_coarsening::Vector{Bool} #BitVector
     ncoarseninglevels::IntT
 end
 
@@ -58,8 +58,9 @@ function KoppRefinementCache(grid::KoppGrid, topology::KoppTopology)
         zeros(Int64,length(topology.root_idx)),
         collect(1:n_interfaces),
         collect(1:n_interfaces),
-        falses(length(topology.root_idx)),
-        falses(length(topology.root_idx)),
+        zeros(Bool, length(topology.root_idx)),
+        zeros(Bool, length(topology.root_idx)),
+        # falses(length(topology.root_idx)),
         1)
 end
 
@@ -137,16 +138,16 @@ function refine!(
 
     @time  "count_neighbors_update_indexing!" n_neighborhoods = count_neighbors_update_indexing!(grid, topology, refinement_cache)
     # sync_amr_refinement_forward!()
-    sync_amr_refinement_forward!(grid, sync, refinement_cache, n_refined_cells, n_neighborhoods)
+    @time  "sync_amr_refinement_forward!" sync_amr_refinement_forward!(grid, sync, refinement_cache, n_refined_cells, n_neighborhoods)
 
     # Resizing the vectors
 
     @show n_neighborhoods
-    _resize_bunch_of_stuff!(grid, topology, n_neighborhoods, new_length)
+    @time  "_resize_bunch_of_stuff!" _resize_bunch_of_stuff!(grid, topology, n_neighborhoods, new_length)
 
-    update_cells!(grid, refinement_cache)
+    @time  "update_cells!"  update_cells!(grid, refinement_cache)
 
-    update_root_idx!(grid, topology, refinement_cache)
+    @time  "update_root_idx!" update_root_idx!(grid, topology, refinement_cache)
 
 
     # kopp_cache.ansatz_isactive[ndofs_old : end] .= true
@@ -154,7 +155,7 @@ function refine!(
 
 
     # # deactivate all parents' shape functions
-    @time update_neighbors!(grid, topology, refinement_cache)
+    @time "update_neighbors!" update_neighbors!(grid, topology, refinement_cache)
     @time  "_calc_interfaces_map" _calc_interfaces_map(grid, topology, refinement_cache, interfaces_dict_prev)
 
     # # Refine KoppCache
@@ -162,7 +163,7 @@ function refine!(
 
     # update_koppcache!(grid, refinement_cache, topology, temp_topology, sync, kopp_values, dh, NFacets)
 
-    sync_amr_refinement_backward!(sync, refinement_cache, grid, topology)
+    @time  "sync_amr_refinement_backward!" sync_amr_refinement_backward!(sync, refinement_cache, grid, topology)
 
     # # # resize refinement cache
     resize!(refinement_cache.old_cell_to_new_cell_map, new_length)

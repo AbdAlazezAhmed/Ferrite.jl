@@ -212,7 +212,7 @@ function get_ref_inherited_dofs!(children_dofs, parent_dofs, interpolation::Inte
     coords = Ferrite.reference_coordinates(interpolation)
     Dim = Ferrite.getrefdim(interpolation)
     root_coords = ntuple(i -> Node(coords[i]), length(coords))
-    dofs = zeros(Int, Ferrite.getnbasefunctions(interpolation) * 2^(Dim))
+    dofs = zero(MVector{Ferrite.getnbasefunctions(interpolation) * 2^(Dim), Int})
     j = 0
     for i in 1:2^Dim
         child_coords = _process_seq(Dim, root_coords, i)
@@ -243,37 +243,50 @@ function update_dofs!(
     temp_cell_dofs_offset::Vector{Int},
     temp_cell_to_subdofhandler::Vector{Int}) where Dim
     dh.cell_dofs_offset .= 0
+    # dh.cell_dofs .= 1
     for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old dofhander vectors
         new == 0 && continue
         dh.cell_dofs_offset[new] = temp_cell_dofs_offset[old]
     end
-    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+    refined = 0
+    @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old dofhander vectors
         new == 0 && continue
         ndofs_per_cell = dh.subdofhandlers[temp_cell_to_subdofhandler[old]].ndofs_per_cell
+        dh.cell_dofs_offset[new] += (2^Dim) * ndofs_per_cell * refined
         if refinement_cache.marked_for_refinement[new]
-            dh.cell_dofs_offset[new + 1 : end] .+= (2^Dim) * ndofs_per_cell
+            # for i in new + 1 : length(dh.cell_dofs_offset)
+                # dh.cell_dofs_offset[i] += (2^Dim) * ndofs_per_cell
+            # end
+            refined += 1
         end
         if refinement_cache.marked_for_coarsening[new]
             dh.cell_dofs_offset[new + 1 : end] .-= (2^Dim) * ndofs_per_cell
         end
-        dh.cell_dofs[dh.cell_dofs_offset[new] : dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1] .= @view temp_celldofs[temp_cell_dofs_offset[old] : temp_cell_dofs_offset[old] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+        dh.cell_dofs[dh.cell_dofs_offset[new] : dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1] .= temp_celldofs[temp_cell_dofs_offset[old] : temp_cell_dofs_offset[old] + dh.subdofhandlers[1].ndofs_per_cell - 1]
         dh.cell_to_subdofhandler[new] = temp_cell_to_subdofhandler[old]
     end
-    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+    max_dof = 0
+    refined = 0
+    @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         new == 0 && continue
         # copy old dofhander vectors
         ndofs_per_cell = dh.subdofhandlers[temp_cell_to_subdofhandler[old]].ndofs_per_cell
         if refinement_cache.marked_for_refinement[new]
-            dh.cell_dofs[dh.cell_dofs_offset[new] + (2^Dim + 1) * ndofs_per_cell : end] .+= (2^Dim - 1) * ndofs_per_cell
+            cell_dofs_current_cell = dh.cell_dofs[dh.cell_dofs_offset[new] :  dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+            max_dof = maximum(cell_dofs_current_cell)
+            for i in dh.cell_dofs_offset[new] + (2^Dim + 1) * ndofs_per_cell : length(dh.cell_dofs)
+                dh.cell_dofs[i] > max_dof || continue
+                dh.cell_dofs[i] += (2^Dim - 1) * ndofs_per_cell
+            end
         end
         if refinement_cache.marked_for_coarsening[new]
             dh.cell_dofs[dh.cell_dofs_offset[new] + ndofs_per_cell : end] .-= (2^Dim - 1) * ndofs_per_cell
         end
     end
 
-    for (old, cell_idx) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+    @views for (old, cell_idx) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         cell_idx == 0 && continue
         if refinement_cache.marked_for_refinement[cell_idx]
             ndofs_per_cell = dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]].ndofs_per_cell
@@ -285,14 +298,13 @@ function update_dofs!(
                 dh.cell_to_subdofhandler[child_idx] = dh.cell_to_subdofhandler[cell_idx]
                 dh.ndofs += dh.subdofhandlers[1].ndofs_per_cell
             end
-            children_dofs = @view dh.cell_dofs[dh.cell_dofs_offset[cell_idx+1] : dh.cell_dofs_offset[cell_idx+1] + (2^Dim) * ndofs_per_cell - 1]
-            parent_dofs = @view dh.cell_dofs[dh.cell_dofs_offset[cell_idx] : dh.cell_dofs_offset[cell_idx + 1] - 1]
+            children_dofs = dh.cell_dofs[dh.cell_dofs_offset[cell_idx+1] : dh.cell_dofs_offset[cell_idx+1] + (2^Dim) * ndofs_per_cell - 1]
+            parent_dofs = dh.cell_dofs[dh.cell_dofs_offset[cell_idx] : dh.cell_dofs_offset[cell_idx + 1] - 1]
             # ASSUMPTION: single field
-            get_ref_inherited_dofs!(children_dofs, parent_dofs, dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]].field_interpolations[1])    
-            @info "aaaa" parent_dofs children_dofs
+            get_ref_inherited_dofs!(children_dofs, parent_dofs, dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]].field_interpolations[1])
         elseif refinement_cache.marked_for_coarsening[cell_idx]
         end
-    
+
     end
 
 end

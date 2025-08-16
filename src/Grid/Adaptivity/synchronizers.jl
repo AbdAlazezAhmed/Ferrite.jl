@@ -63,41 +63,44 @@ end
 function update!(data_store::AMRdofwiseVector, data_store_prev::AMRdofwiseVector, grid::KoppGrid{Dim}, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int}) where Dim
     data_store.data .= 0.0
     sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[1]]
-    empty!(sdh.cellset)
-    push!(sdh.cellset, (1:length(grid.kopp_cells))...)
-    @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
-        new == 0 && continue
-        new_offset = dh.cell_dofs_offset[new]
-        new_sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[new]]
-        # TODO: do only once
-        new_dofs = dh.cell_dofs[new_offset : new_offset + new_sdh.ndofs_per_cell - 1]
-        old_offset = cell_dofs_offset_prev[old]
-        old_sdh = dh.subdofhandlers[cell_to_subdofhandler_prev[old]]
-        old_dofs = celldofs_prev[old_offset : old_offset + old_sdh.ndofs_per_cell - 1]
-        data_store.data[new_dofs] .= data_store_prev.data[old_dofs]
-    end
-
-    for cell_idx in 1:length(grid.kopp_cells)
-        cell = getcells(grid, cell_idx)
-        # Calculate new interfaces
-        if refinement_cache.marked_for_refinement[cell_idx]
-            parent_offset = dh.cell_dofs_offset[cell_idx]
-            parent_sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]]
-            parent_dofs = @view dh.cell_dofs[parent_offset : parent_offset + parent_sdh.ndofs_per_cell - 1]
-            for new_seq in 1 : 2^Dim
-                child_idx = cell_idx + new_seq
-                # DofHandler add new dofs and offsets
-                # For DG only
-                offset = dh.cell_dofs_offset[child_idx]
-                sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[child_idx]]
-                dofs = @view dh.cell_dofs[offset : offset + sdh.ndofs_per_cell - 1]
-                # for dof in dofs
-                #     @info new_seq dof data_store.data[dof]
-                # end
-                # interpolate_solution!(Ferrite.RefHypercube{Dim}, data_store.data, dofs, parent_dofs, new_seq)
-            end
+    # empty!(sdh.cellset)
+    @time "doing the work" begin
+        @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+            new == 0 && continue
+            new_offset = dh.cell_dofs_offset[new]
+            new_sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[new]]
+            # TODO: do only once
+            new_dofs = dh.cell_dofs[new_offset : new_offset + new_sdh.ndofs_per_cell - 1]
+            old_offset = cell_dofs_offset_prev[old]
+            old_sdh = dh.subdofhandlers[cell_to_subdofhandler_prev[old]]
+            old_dofs = celldofs_prev[old_offset : old_offset + old_sdh.ndofs_per_cell - 1]
+            data_store.data[new_dofs] .= data_store_prev.data[old_dofs]
+            push!(sdh.cellset, new)
         end
-        if refinement_cache.marked_for_coarsening[cell_idx]
+
+        @views for cell_idx in 1:length(grid.kopp_cells)
+            cell = getcells(grid, cell_idx)
+            # Calculate new interfaces
+            if refinement_cache.marked_for_refinement[cell_idx]
+                parent_offset = dh.cell_dofs_offset[cell_idx]
+                parent_sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]]
+                parent_dofs = dh.cell_dofs[parent_offset : parent_offset + parent_sdh.ndofs_per_cell - 1]
+                for new_seq in 1 : 2^Dim
+                    child_idx = cell_idx + new_seq
+                    push!(sdh.cellset, child_idx)
+                    # DofHandler add new dofs and offsets
+                    # For DG only
+                    offset = dh.cell_dofs_offset[child_idx]
+                    sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[child_idx]]
+                    dofs = dh.cell_dofs[offset : offset + sdh.ndofs_per_cell - 1]
+                    # for dof in dofs
+                    #     @info new_seq dof data_store.data[dof]
+                    # end
+                    interpolate_solution!(Ferrite.RefHypercube{Dim}, data_store.data, dofs, parent_dofs, new_seq)
+                end
+            end
+            if refinement_cache.marked_for_coarsening[cell_idx]
+            end
         end
     end
 end
@@ -145,7 +148,7 @@ function sync_amr_refinement_forward!(grid::KoppGrid, sync::LTSAMRSynchronizer, 
     resize!(sync.dh.cell_dofs_offset, new_length)
     resize!(sync.dh.cell_to_subdofhandler, new_length)
 
-    update_dofs!(grid, refinement_cache, sync.dh, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev)
+    @time "update_dofs!" update_dofs!(grid, refinement_cache, sync.dh, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev)
 
     sync.interface_matrix_index .= 0
 end
@@ -226,8 +229,10 @@ function sync_amr_refinement_backward!(sync::LTSAMRSynchronizer, refinement_cach
     #     assemble_interface_matrix!((@view kopp_cache.interface_matrices[:,:,interface_index]), kopp_values)
     #     interface_index += 1
     # end
-    unrolled_foreach((data_store_) -> update!(data_store_[1],  data_store_[2], grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev), zip(sync.data_stores, sync.data_stores_prev))
-
+    # unrolled_foreach((data_store_) -> update!(data_store_[1],  data_store_[2], grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev), zip(sync.data_stores, sync.data_stores_prev))
+    for i in 1:length(sync.data_stores)
+        update!(sync.data_stores[i],  sync.data_stores_prev[i], grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev)
+    end
     copy!(sync.celldofs_prev, sync.dh.cell_dofs)
     copy!(sync.cell_dofs_offset_prev, sync.dh.cell_dofs_offset)
     copy!(sync.cell_to_subdofhandler_prev, sync.dh.cell_to_subdofhandler)
