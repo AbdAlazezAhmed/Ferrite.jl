@@ -120,7 +120,7 @@ function refine!(
         topology::KoppTopology,
         refinement_cache::KoppRefinementCache,
         sync::AbstractAMRSynchronizer,
-        cellset::Set{CellIndex}
+        cellset::OrderedSet{CellIndex}
         ) where Dim
     @time  "_calc_interfaces_dict_prev" interfaces_dict_prev = _calc_interfaces_dict_prev(grid, topology)
 
@@ -190,7 +190,7 @@ function coarsen!(
         topology::KoppTopology,
         refinement_cache::KoppRefinementCache,
         sync::AbstractAMRSynchronizer,
-        cellset::Set{CellIndex}
+        cellset::OrderedSet{CellIndex}
         ) where Dim
     @time  "_calc_interfaces_dict_prev" interfaces_dict_prev = _calc_interfaces_dict_prev(grid, topology)
     n_coarsened_cells = length(cellset)
@@ -200,20 +200,22 @@ function coarsen!(
     refinement_cache.old_cell_to_new_cell_map .= 1:length(refinement_cache.old_cell_to_new_cell_map)
     # Counting how many refined cells and interfaces and calculating the new index
     @time "__update_refinement_cache_isactive" __update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
-
+    @info refinement_cache.old_cell_to_new_cell_map
     _resize_topology!(topology, new_length, Val(Dim))
 
     zero_topology!(topology)
+    # _resize_bunch_of_stuff!(grid, topology, n_neighborhoods, new_length)
 
     n_neighborhoods = _count_neighbors_update_indexing!(grid, topology, refinement_cache)
     sync_amr_coarsening_forward!(grid, sync, refinement_cache, n_coarsened_cells, n_neighborhoods)
 
-
-    _resize_bunch_of_stuff!(grid, topology, n_neighborhoods, new_length)
-
+    resize!(grid.kopp_cells, new_length)
+    resize!(topology.root_idx, new_length)
     update_coarsened_cells!(grid, refinement_cache)
-
     update_coarsened_root_idx!(grid, topology, refinement_cache)
+
+
+
 
     sync_amr_coarsening_backward!(sync, refinement_cache, grid, topology)
 

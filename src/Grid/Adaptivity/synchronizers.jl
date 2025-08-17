@@ -63,7 +63,7 @@ end
 function update!(data_store::AMRdofwiseVector, data_store_prev::AMRdofwiseVector, grid::KoppGrid{Dim}, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int}) where Dim
     data_store.data .= 0.0
     sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[1]]
-    # empty!(sdh.cellset)
+    empty!(sdh.cellset)
     @time "doing the work" begin
         @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
             new == 0 && continue
@@ -75,6 +75,13 @@ function update!(data_store::AMRdofwiseVector, data_store_prev::AMRdofwiseVector
             old_sdh = dh.subdofhandlers[cell_to_subdofhandler_prev[old]]
             old_dofs = celldofs_prev[old_offset : old_offset + old_sdh.ndofs_per_cell - 1]
             data_store.data[new_dofs] .= data_store_prev.data[old_dofs]
+            # if refinement_cache.marked_for_coarsening[new]
+            #     delete!(sdh.cellset, old)
+            #     delete!(sdh.cellset, old+1)
+            #     delete!(sdh.cellset, old+2)
+            #     delete!(sdh.cellset, old+3)
+            #     delete!(sdh.cellset, old+4)
+            # end
             push!(sdh.cellset, new)
         end
 

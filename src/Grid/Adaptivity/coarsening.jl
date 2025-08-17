@@ -1,7 +1,7 @@
 function __resize_marked_for_refinement!(
     grid::KoppGrid{Dim},
     refinement_cache::KoppRefinementCache,
-    cellset::Set{CellIndex}) where {Dim}
+    cellset::AbstractSet{CellIndex}) where {Dim}
     n_refined_cells = length(cellset)
     new_length = length(grid.kopp_cells) - (2^Dim) * n_refined_cells
     resize!(refinement_cache.marked_for_coarsening, new_length)
@@ -16,7 +16,7 @@ function __update_refinement_cache_isactive!(
     grid::KoppGrid{Dim},
     topology::KoppTopology, # Old topology
     refinement_cache::KoppRefinementCache,
-    cellset::Set{CellIndex}
+    cellset::AbstractSet{CellIndex}
     ) where {Dim}
     n_refined_interfaces = 0
     for (i, cell) in enumerate(grid.kopp_cells)
@@ -79,10 +79,11 @@ function _count_neighbors_update_indexing!(
                         child_neighbors = @view topology.neighbors_prev[child_neighbors_offset : child_neighbors_offset + child_neighbors_length - 1]
                         for child_neighbor in child_neighbors
                             parent_idx = grid.kopp_cells[child_neighbor[1]].parent
-                            if parent_idx < 0 || (refinement_cache.old_cell_to_new_cell_map[child_neighbor[1]] != 0 && !refinement_cache.marked_for_coarsening[parent_idx])
+                            parent_idx_new = parent_idx < 0 ? parent_idx : refinement_cache.old_cell_to_new_cell_map[parent_idx]
+                            if parent_idx < 0 || (refinement_cache.old_cell_to_new_cell_map[child_neighbor[1]] != 0 && !refinement_cache.marked_for_coarsening[parent_idx_new])
                                 push!(set, FacetIndex(refinement_cache.old_cell_to_new_cell_map[child_neighbor[1]], child_neighbor[2]))
                             else
-                                push!(set, FacetIndex(parent_idx, child_neighbor[2]))
+                                push!(set, FacetIndex(parent_idx_new, child_neighbor[2]))
                             end
                         end
                     end
@@ -100,10 +101,11 @@ function _count_neighbors_update_indexing!(
                 child_neighbors = @view topology.neighbors_prev[child_neighbors_offset : child_neighbors_offset + child_neighbors_length - 1]
                 for child_neighbor in child_neighbors
                     parent_idx = grid.kopp_cells[child_neighbor[1]].parent
-                    if parent_idx < 0 || (refinement_cache.old_cell_to_new_cell_map[parent_idx] != 0 && refinement_cache.old_cell_to_new_cell_map[child_neighbor[1]] != 0 && !refinement_cache.marked_for_coarsening[refinement_cache.old_cell_to_new_cell_map[parent_idx]])
+                    parent_idx_new = parent_idx < 0 ? parent_idx : refinement_cache.old_cell_to_new_cell_map[parent_idx]
+                    if parent_idx < 0 || (refinement_cache.old_cell_to_new_cell_map[parent_idx] != 0 && refinement_cache.old_cell_to_new_cell_map[child_neighbor[1]] != 0 && !refinement_cache.marked_for_coarsening[parent_idx_new])
                         push!(set, FacetIndex(refinement_cache.old_cell_to_new_cell_map[child_neighbor[1]], child_neighbor[2]))
                     else
-                        push!(set, FacetIndex(parent_idx, child_neighbor[2]))
+                        push!(set, FacetIndex(parent_idx_new, child_neighbor[2]))
                     end
                 end
                 topology.cell_facet_neighbors_offset[facet, new_i] = length(set) == 0 ? 0 : n_neighborhoods + 1
@@ -124,7 +126,7 @@ function update_coarsened_cells!(
         # copy old cells
         new == 0 && continue
         old_cell = grid.kopp_cells_prev[old]
-        grid.kopp_cells[new] =  KoppCell{Dim, Int}((old_cell.parent > 0 ? refinement_cache.old_cell_to_new_cell_map[old_cell.parent] : old_cell.parent) , old_cell.sequence, refinement_cache.marked_for_refinement[new] ? true : old_cell.isleaf)
+        grid.kopp_cells[new] =  KoppCell{Dim, Int}((old_cell.parent > 0 ? refinement_cache.old_cell_to_new_cell_map[old_cell.parent] : old_cell.parent) , old_cell.sequence, refinement_cache.marked_for_coarsening[new] ? true : old_cell.isleaf)
     end
 end
 

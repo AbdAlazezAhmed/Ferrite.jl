@@ -1,7 +1,7 @@
 function _resize_marked_for_refinement!(
     grid::KoppGrid{Dim},
     refinement_cache::KoppRefinementCache,
-    cellset::Set{CellIndex}) where {Dim}
+    cellset::AbstractSet{CellIndex}) where {Dim}
     n_refined_cells = length(cellset)
     new_length = length(grid.kopp_cells) + (2^Dim) * n_refined_cells
     resize!(refinement_cache.marked_for_refinement, new_length)
@@ -18,7 +18,7 @@ function _update_refinement_cache_isactive!(
     grid::KoppGrid{Dim},
     topology::KoppTopology, # Old topology
     refinement_cache::KoppRefinementCache,
-    cellset::Set{CellIndex}
+    cellset::AbstractSet{CellIndex}
     ) where {Dim}
     n_refined_interfaces = 0
     for (i, cell) in enumerate(grid.kopp_cells)
@@ -250,11 +250,13 @@ function update_dofs!(
         dh.cell_dofs_offset[new] = temp_cell_dofs_offset[old]
     end
     refined = 0
+    coarsened = 0
     @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old dofhander vectors
         new == 0 && continue
         ndofs_per_cell = dh.subdofhandlers[temp_cell_to_subdofhandler[old]].ndofs_per_cell
         dh.cell_dofs_offset[new] += (2^Dim) * ndofs_per_cell * refined
+        dh.cell_dofs_offset[new] -= (2^Dim) * ndofs_per_cell * coarsened
         if refinement_cache.marked_for_refinement[new]
             # for i in new + 1 : length(dh.cell_dofs_offset)
                 # dh.cell_dofs_offset[i] += (2^Dim) * ndofs_per_cell
@@ -262,7 +264,7 @@ function update_dofs!(
             refined += 1
         end
         if refinement_cache.marked_for_coarsening[new]
-            dh.cell_dofs_offset[new + 1 : end] .-= (2^Dim) * ndofs_per_cell
+            coarsened += 1
         end
         dh.cell_dofs[dh.cell_dofs_offset[new] : dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1] .= temp_celldofs[temp_cell_dofs_offset[old] : temp_cell_dofs_offset[old] + dh.subdofhandlers[1].ndofs_per_cell - 1]
         dh.cell_to_subdofhandler[new] = temp_cell_to_subdofhandler[old]
@@ -282,7 +284,12 @@ function update_dofs!(
             end
         end
         if refinement_cache.marked_for_coarsening[new]
-            dh.cell_dofs[dh.cell_dofs_offset[new] + ndofs_per_cell : end] .-= (2^Dim - 1) * ndofs_per_cell
+            cell_dofs_current_cell = dh.cell_dofs[dh.cell_dofs_offset[new] :  dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+            max_dof = maximum(cell_dofs_current_cell)
+            for i in dh.cell_dofs_offset[new] : length(dh.cell_dofs)
+                dh.cell_dofs[i] > max_dof || continue
+                dh.cell_dofs[i] -= (2^Dim - 1) * ndofs_per_cell
+            end
         end
     end
 
