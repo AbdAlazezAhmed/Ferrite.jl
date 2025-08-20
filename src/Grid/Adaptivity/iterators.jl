@@ -53,7 +53,7 @@ function Base.iterate(ii::Ferrite.InterfaceIterator{IC,<:KoppGrid{sdim}}, state 
             continue
         end
         facet_b = neighbors[]
-        facet_a[1] > facet_b[1] && continue
+        get_refinement_level(ii.grid.kopp_cells[facet_a[1]]) == get_refinement_level(ii.grid.kopp_cells[facet_b[1]]) && facet_a[1] > facet_b[1] && continue
         reinit!(ii.cache, facet_a, facet_b)
         return (ii.cache, state)
     end

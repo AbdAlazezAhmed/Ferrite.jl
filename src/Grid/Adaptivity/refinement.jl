@@ -71,24 +71,52 @@ function add_inherited_neighbors!(n_neighborhoods::Int, cell_idx::Int, refinemen
         shift = cell_facet_orientation_info.shift_index - (flip_interface ? neighbor_facet_orientation_info.shift_index : length(neighbor_children) - neighbor_facet_orientation_info.shift_index)
         new_neighbor_children = neighbor_children
         # URGERNT TODO: find a way to enable next line without allocations
+        new_neighbor_children = reverse(neighbor_children)
         # new_neighbor_children = circshift((flip_interface ? reverse(neighbor_children) : neighbor_children), shift)
-        neighbor_local_seq = neighbor_cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * get_refinement_level(cell)))
-        if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
-            if (get_refinement_level(neighbor_cell) > get_refinement_level(cell)) && findfirst(==(new_seq), cell_children) == findfirst(==(neighbor_local_seq), new_neighbor_children)
-                topology.neighbors[n_neighborhoods + neighbors_count + 1 : n_neighborhoods + neighbors_count + length(neighbor_children)] = [FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx] + neighbor_child, neighbor_facet) for neighbor_child in neighbor_children]
-                neighbors_count += length(neighbor_children)
-                continue
-            else
+        # neighbor_local_seq = neighbor_cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * get_refinement_level(cell)))
+        # neighbor_local_seq = (neighbor_cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * (max(0, get_refinement_level(cell)) )))) >>  ((Dim + 1) * (max(0, get_refinement_level(cell))))
+
+        if (get_refinement_level(neighbor_cell) > get_refinement_level(cell))
+            neighbor_local_seq = (neighbor_cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * (get_refinement_level(neighbor_cell) - get_refinement_level(cell) -1)))) >>  ((Dim + 1) * (get_refinement_level(neighbor_cell) - get_refinement_level(cell) -1))
+            if findfirst(==(new_seq), cell_children) == findfirst(==(neighbor_local_seq), new_neighbor_children)
+                if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
+                    topology.neighbors[n_neighborhoods + neighbors_count + 1 : n_neighborhoods + neighbors_count + length(neighbor_children)] = [FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx] + neighbor_child, neighbor_facet) for neighbor_child in neighbor_children]
+                    neighbors_count += length(neighbor_children)
+                    continue
+                else
+                    topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx], neighbor_facet)
+                    neighbors_count += 1
+                    continue
+                end
+            end
+        elseif (get_refinement_level(neighbor_cell) < get_refinement_level(cell))
+            _new_seq = (cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * (get_refinement_level(cell) - get_refinement_level(neighbor_cell) -1)))) >>  ((Dim + 1) * ((get_refinement_level(cell) - get_refinement_level(neighbor_cell) -1)))
+            # if findfirst(==(_new_seq), cell_children) == findfirst(==(neighbor_local_seq), new_neighbor_children)
+                if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
+                    topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx] + new_neighbor_children[findfirst(==(_new_seq), cell_children)], neighbor_facet)
+                    neighbors_count += 1
+                    continue
+                else
+                    topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx], neighbor_facet)
+                    neighbors_count += 1
+                    continue
+                end
+            # end
+        elseif (get_refinement_level(neighbor_cell) == get_refinement_level(cell))
+            # _new_seq = (cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * (max(get_refinement_level(neighbor_cell) - 1, 0))))) >>  ((Dim + 1) * (max(get_refinement_level(neighbor_cell), 1) - 1))
+            # neighbor_cell.sequence == 0 &&
+            if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
                 topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx] + new_neighbor_children[findfirst(==(new_seq), cell_children)], neighbor_facet)
                 neighbors_count += 1
                 continue
+            else
+                topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx], neighbor_facet)
+                neighbors_count += 1
+                continue
             end
-        else
-            topology.neighbors[n_neighborhoods + neighbors_count + 1] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx], neighbor_facet)
-            neighbors_count += 1
-            continue
         end
     end
+
     return neighbors_count
 end
 function update_neighbors!(
@@ -121,13 +149,34 @@ function update_neighbors!(
                 n_facet_neighbors = 0
                 neighbors_offset = temp_cell_facet_neighbors_offset[facet, i]
                 neighbors_length = temp_cell_facet_neighbors_length[facet, i]
+                cell_children = Ferrite.reference_facets(getrefshape(getcelltype(grid.base_grid)))[facet]
+
+                # BUG SOLUTION HERE: make it into cases
                 for neighbor in @view topology.neighbors_prev[neighbors_offset:neighbors_offset+neighbors_length-1]
+                    neighbor_facet = neighbor[2]
+                    neighbor_idx = neighbor[1]
+                    neighbor_children = SVector(Ferrite.reference_facets(getrefshape(getcelltype(grid.base_grid)))[neighbor_facet])
+                    cell_facet_orientation_info = topology.root_facet_orientation_info[topology.root_idx_prev[i]+facet-1]
+                    neighbor_facet_orientation_info = topology.root_facet_orientation_info[topology.root_idx_prev[neighbor[1]]+neighbor_facet-1]
+                    flip_interface = (cell_facet_orientation_info.flipped ⊻ neighbor_facet_orientation_info.flipped)
+                    shift = cell_facet_orientation_info.shift_index - (flip_interface ? neighbor_facet_orientation_info.shift_index : length(neighbor_children) - neighbor_facet_orientation_info.shift_index)
+                    new_neighbor_children = neighbor_children
+                    # URGERNT TODO: find a way to enable next line without allocations
+                    new_neighbor_children = reverse(neighbor_children)
                     if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor[1]]]
-                        # TODO: double check if we use old or new index here
-                        for (i, new_seq) in enumerate(Ferrite.reference_facets(getrefshape(getcelltype(grid.base_grid)))[neighbor[2]])
-                            topology.neighbors[n_neighborhoods + n_facet_neighbors + i] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor[1]] + new_seq, get_ref_face_neighborhood(getrefshape(getcelltype(grid.base_grid)))[facet])
+                        neighbor_cell = grid.kopp_cells_prev[neighbor[1]]
+                        if get_refinement_level(neighbor_cell) < get_refinement_level(cell)
+                            _new_seq = (cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * (get_refinement_level(cell) - get_refinement_level(neighbor_cell) -1)))) >>  ((Dim + 1) * ((get_refinement_level(cell) - get_refinement_level(neighbor_cell) -1)))
+                            topology.neighbors[n_neighborhoods + n_facet_neighbors + 1] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor_idx] + new_neighbor_children[findfirst(==(_new_seq), cell_children)], neighbor_facet)
+                            n_facet_neighbors += 1
+                        else
+                            # TODO: double check if we use old or new index here
+                            for (i, new_seq) in enumerate(Ferrite.reference_facets(getrefshape(getcelltype(grid.base_grid)))[neighbor[2]])
+                                topology.neighbors[n_neighborhoods + n_facet_neighbors + i] = FacetIndex(refinement_cache.old_cell_to_new_cell_map[neighbor[1]] + new_seq, neighbor[2])
+                            end
+                            n_facet_neighbors += 2^(Dim - 1)
                         end
-                        n_facet_neighbors += 2^(Dim - 1)
+
 
                     else
                         n_facet_neighbors += 1
@@ -170,7 +219,7 @@ function count_neighbors_update_indexing!(
     temp_cell_facet_neighbors_length = topology.cell_facet_neighbors_length_prev
     n_neighborhoods = 0
     ref_cell_neighborhood = get_ref_cell_neighborhood(getrefshape(getcelltype(grid.base_grid)))
-    for i in 1:length(grid.kopp_cells)
+    for (i, cell) in enumerate(grid.kopp_cells)
         new_i = refinement_cache.old_cell_to_new_cell_map[i]
         if refinement_cache.marked_for_refinement[new_i]
             for new_seq in 1:2^Dim
@@ -192,9 +241,25 @@ function count_neighbors_update_indexing!(
                 n_facet_neighbors = 0
                 neighbors_offset = temp_cell_facet_neighbors_offset[facet, i]
                 neighbors_length = temp_cell_facet_neighbors_length[facet, i]
+                cell_children = Ferrite.reference_facets(getrefshape(getcelltype(grid.base_grid)))[facet]
                 for neighbor in @view topology.neighbors_prev[neighbors_offset:neighbors_offset+neighbors_length-1]
+                    neighbor_facet = neighbor[2]
+                    neighbor_idx = neighbor[1]
+                    neighbor_children = SVector(Ferrite.reference_facets(getrefshape(getcelltype(grid.base_grid)))[neighbor_facet])
+                    cell_facet_orientation_info = topology.root_facet_orientation_info[topology.root_idx_prev[i]+facet-1]
+                    neighbor_facet_orientation_info = topology.root_facet_orientation_info[topology.root_idx_prev[neighbor[1]]+neighbor_facet-1]
+                    flip_interface = (cell_facet_orientation_info.flipped ⊻ neighbor_facet_orientation_info.flipped)
+                    shift = cell_facet_orientation_info.shift_index - (flip_interface ? neighbor_facet_orientation_info.shift_index : length(neighbor_children) - neighbor_facet_orientation_info.shift_index)
+                    new_neighbor_children = neighbor_children
+                    # URGERNT TODO: find a way to enable next line without allocations
+                    new_neighbor_children = reverse(neighbor_children)
                     if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor[1]]]
-                        n_facet_neighbors += 2^(Dim - 1)
+                        neighbor_cell = grid.kopp_cells_prev[neighbor[1]]
+                        if get_refinement_level(neighbor_cell) < get_refinement_level(cell)
+                            n_facet_neighbors += 1
+                        else
+                            n_facet_neighbors += 2^(Dim - 1)
+                        end
                     else
                         n_facet_neighbors += 1
                     end

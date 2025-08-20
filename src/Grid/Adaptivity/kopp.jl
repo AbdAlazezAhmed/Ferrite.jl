@@ -138,11 +138,11 @@ function refine!(
 
     @time  "count_neighbors_update_indexing!" n_neighborhoods = count_neighbors_update_indexing!(grid, topology, refinement_cache)
     # sync_amr_refinement_forward!()
+    @show n_neighborhoods
     @time  "sync_amr_refinement_forward!" sync_amr_refinement_forward!(grid, sync, refinement_cache, n_refined_cells, n_neighborhoods)
 
     # Resizing the vectors
 
-    @show n_neighborhoods
     @time  "_resize_bunch_of_stuff!" _resize_bunch_of_stuff!(grid, topology, n_neighborhoods, new_length)
 
     @time  "update_cells!"  update_cells!(grid, refinement_cache)
@@ -200,7 +200,6 @@ function coarsen!(
     refinement_cache.old_cell_to_new_cell_map .= 1:length(refinement_cache.old_cell_to_new_cell_map)
     # Counting how many refined cells and interfaces and calculating the new index
     @time "__update_refinement_cache_isactive" __update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
-    @info refinement_cache.old_cell_to_new_cell_map
     _resize_topology!(topology, new_length, Val(Dim))
 
     zero_topology!(topology)

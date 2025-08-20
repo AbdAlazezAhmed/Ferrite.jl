@@ -35,6 +35,8 @@ end
 function assemble_element_matrix!(K_cell_matrices, kopp_values, cell_idx) error("FUCK MICROSOFT") end
 
 function Base.resize!(data_store::TimeVector, data_store_prev::TimeVector, ncells, ninterfaces, ndofs_per_cell)
+    Base.resize!(data_store_prev.data, size(data_store.data)...)
+    data_store_prev.data .= data_store.data
     Base.resize!(data_store.data, ncells)
     # data_store.data .= zero(eltype(data_store.data))
 end
@@ -47,20 +49,32 @@ function Base.resize!(data_store::AMRdofwiseVector, data_store_prev::AMRdofwiseV
 end
 
 function Base.resize!(data_store::AMRCellData{<:ElasticArray}, data_store_prev::AMRCellData{<:ElasticArray}, ncells, ninterfaces, ndofs_per_cell)
+    Base.resize!(data_store_prev.data, size(data_store.data)...)
+    data_store_prev.data .= data_store.data
     Base.resize!(data_store.data, size(data_store.data)[1], size(data_store.data)[2], ncells)
     data_store.data .= zero(eltype(data_store.data))
 end
 
 function Base.resize!(data_store::AMRInterfaceData{<:ElasticArray}, data_store_prev::AMRInterfaceData{<:ElasticArray}, ncells, ninterfaces, ndofs_per_cell)
+    Base.resize!(data_store_prev.data, size(data_store.data)...)
+    data_store_prev.data .= data_store.data
     Base.resize!(data_store.data, size(data_store.data)[1], size(data_store.data)[2], ninterfaces)
     data_store.data .= zero(eltype(data_store.data))
 end
 
-function update!(data_store::TimeVector, data_store_prev::TimeVector, grid, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int})
-
+function update!(data_store::TimeVector, data_store_prev::TimeVector, grid::KoppGrid{Dim}, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int}, values_cache) where Dim
+    @time "doing the work" begin
+        @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+            new == 0 && continue
+            data_store.data[new] = data_store_prev.data[old]
+            if refinement_cache.marked_for_refinement[new]
+                data_store.data[new + 1 : new + 2^Dim] .= data_store.data[new]
+            end
+        end
+    end
 end
 
-function update!(data_store::AMRdofwiseVector, data_store_prev::AMRdofwiseVector, grid::KoppGrid{Dim}, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int}) where Dim
+function update!(data_store::AMRdofwiseVector, data_store_prev::AMRdofwiseVector, grid::KoppGrid{Dim}, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int}, values_cache) where Dim
     data_store.data .= 0.0
     sdh = dh.subdofhandlers[dh.cell_to_subdofhandler[1]]
     empty!(sdh.cellset)
@@ -112,12 +126,47 @@ function update!(data_store::AMRdofwiseVector, data_store_prev::AMRdofwiseVector
     end
 end
 
-function update!(data_store::AMRCellData{<:ElasticArray}, data_store_prev::AMRCellData{<:ElasticArray}, grid, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int})
-
+function update!(data_store::AMRCellData{<:ElasticArray}, data_store_prev::AMRCellData{<:ElasticArray}, grid::KoppGrid{Dim}, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int}, values_cache) where Dim
+    @time "doing the work" begin
+        @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+            new == 0 && continue
+            data_store.data[:,:,new] .= data_store_prev.data[:,:,old]
+            if refinement_cache.marked_for_refinement[new]
+                data_store.data[:,:, new + 1 : new + 2^Dim] .= 0.0
+            end
+        end
+        for cell_cache in Ferrite.CellIterator(grid)
+            cell_idx = cell_cache.cellid
+            old = refinement_cache.new_cell_to_old_cell_map[cell_idx]
+            if iszero(old)
+                reinit!(values_cache.cell_values, cell_cache)
+                assemble_element_matrix!(data_store, values_cache, cell_idx)
+            else
+                new_data = @view data_store.data[:,:,cell_idx]
+                new_data .= @view data_store_prev.data[:,:,old]
+            end
+        end
+    end
 end
 
-function update!(data_store::AMRInterfaceData{<:ElasticArray}, data_store_prev::AMRInterfaceData{<:ElasticArray}, grid, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int})
-
+function update!(data_store::AMRInterfaceData{<:ElasticArray}, data_store_prev::AMRInterfaceData{<:ElasticArray}, grid, topology, dh, refinement_cache, celldofs_prev::Vector{Int}, cell_dofs_offset_prev::Vector{Int}, cell_to_subdofhandler_prev::Vector{Int}, values_cache)
+    @time "doing the work" begin
+        interface_index = 1
+        data_store.data .= 0.0
+        for (old, new) in enumerate(refinement_cache.interfaces_data_updated_indices)
+            iszero(new) && continue
+            new_data = @view data_store.data[:,:,new]
+            new_data .= @view data_store_prev.data[:,:,old]
+        end
+        for interface_cache in Ferrite.InterfaceIterator(grid, topology)
+            data = @view data_store.data[:,:,interface_index]
+            if all(iszero, data)
+                reinit!(values_cache.interface_values, interface_cache, topology)
+                assemble_element_matrix!(data_store, values_cache, interface_index)
+            end
+            interface_index += 1
+        end
+    end
 end
 
 struct LTSAMRSynchronizer{DataStores,VCT<:ValuesCache,DHT<:DofHandler} <: AbstractAMRSynchronizer
@@ -238,7 +287,7 @@ function sync_amr_refinement_backward!(sync::LTSAMRSynchronizer, refinement_cach
     # end
     # unrolled_foreach((data_store_) -> update!(data_store_[1],  data_store_[2], grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev), zip(sync.data_stores, sync.data_stores_prev))
     for i in 1:length(sync.data_stores)
-        update!(sync.data_stores[i],  sync.data_stores_prev[i], grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev)
+        update!(sync.data_stores[i],  sync.data_stores_prev[i], grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev, sync.values_cache)
     end
     copy!(sync.celldofs_prev, sync.dh.cell_dofs)
     copy!(sync.cell_dofs_offset_prev, sync.dh.cell_dofs_offset)
@@ -299,7 +348,7 @@ function sync_amr_coarsening_backward!(sync::LTSAMRSynchronizer, refinement_cach
     #     assemble_interface_matrix!((@view kopp_cache.interface_matrices[:,:,interface_index]), kopp_values)
     #     interface_index += 1
     # end
-    unrolled_foreach((data_store_) -> update!(data_store_[1],  data_store_[2], grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev), zip(sync.data_stores, sync.data_stores_prev))
+    unrolled_foreach((data_store_) -> update!(data_store_[1],  data_store_[2], grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev, sync.values_cache), zip(sync.data_stores, sync.data_stores_prev))
 
     copy!(sync.celldofs_prev, sync.dh.cell_dofs)
     copy!(sync.cell_dofs_offset_prev, sync.dh.cell_dofs_offset)
@@ -316,7 +365,7 @@ function assemble_element_matrix!(K::CellMassMatrix, kopp_values::ValuesCache, c
         for i in 1:n_basefuncs
             δu  = Ferrite.shape_value(cv, q_point, i)
             for j in 1:n_basefuncs
-                u = Ferrite.shape_value(cv, q_point, i)
+                u = Ferrite.shape_value(cv, q_point, j)
                 Ke[i, j] += (δu ⋅ u) * dΩ
             end
         end
@@ -343,7 +392,7 @@ function assemble_element_matrix!(K::CellStiffnessMatrix, kopp_values::ValuesCac
     end
     return nothing
 end
-function assemble_element_matrix!(K::InterfaceStiffnessMatrix, kopp_values::ValuesCache, interface_index, μ::Float64 = 10.)
+function assemble_element_matrix!(K::InterfaceStiffnessMatrix, kopp_values::ValuesCache, interface_index, μ::Float64 = 8.)
     Ki = @view K.data[:,:,interface_index]
     iv = kopp_values.interface_values
     for q_point in 1:getnquadpoints(iv)
@@ -390,8 +439,7 @@ function LTSAMRSynchronizer(grid::KoppGrid, dh::Ferrite.AbstractDofHandler, kopp
     # Construct interface matrix indices
     interface_matrix_indices = Vector{Int}(undef, count(topology.cell_facet_neighbors_length .!= 0 ))
     interface_index = 1
-    ii = Ferrite.InterfaceIterator(grid, topology)
-    for interface_cache in ii
+    for interface_cache in Ferrite.InterfaceIterator(grid, topology)
         reinit!(kopp_values.interface_values, interface_cache, topology)
         assemble_element_matrix!(K_interface_matrices, kopp_values, interface_index)
         interface_index += 1

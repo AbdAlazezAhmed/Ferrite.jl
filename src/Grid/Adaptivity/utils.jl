@@ -97,18 +97,42 @@ function count_inherited_neighbors(cell_idx::Int, refinement_cache::KoppRefineme
         new_neighbor_children = neighbor_children
         # URGERNT TODO: find a way to enable next line without allocations
         # new_neighbor_children = circshift((flip_interface ? reverse(neighbor_children) : neighbor_children), shift)
-        neighbor_local_seq = neighbor_cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * get_refinement_level(cell)))
-        if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
-            if (get_refinement_level(neighbor_cell) > get_refinement_level(cell)) && findfirst(==(new_seq), cell_children) == findfirst(==(neighbor_local_seq), new_neighbor_children)
-                neighbors_count += length(neighbor_children)
+        new_neighbor_children = reverse(neighbor_children)
+        # neighbor_local_seq = (neighbor_cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * (max(0, get_refinement_level(cell)))))) >>  ((Dim + 1) * (max(0, get_refinement_level(cell)) ))
+        # @show
+        if (get_refinement_level(neighbor_cell) > get_refinement_level(cell))
+            neighbor_local_seq = (neighbor_cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * (get_refinement_level(neighbor_cell) - get_refinement_level(cell) -1)))) >>  ((Dim + 1) * (get_refinement_level(neighbor_cell) - get_refinement_level(cell) -1))
+            # if get_refinement_level(cell) == 0
+            #     neighbor_local_seq = (neighbor_cell.sequence & ((1 << (Dim + 1)) - 1))
+            # end
+            if findfirst(==(new_seq), cell_children) == findfirst(==(neighbor_local_seq), new_neighbor_children)
+                if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
+                    neighbors_count += length(neighbor_children)
+                    continue
+                else
+                    neighbors_count += 1
+                    continue
+                end
+            end
+        elseif (get_refinement_level(neighbor_cell) < get_refinement_level(cell))
+            _new_seq = (cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * (max(get_refinement_level(neighbor_cell) - 1, 0))))) >>  ((Dim + 1) * (max(get_refinement_level(neighbor_cell)  - 1, 0)))
+            # if findfirst(==(_new_seq), cell_children) == findfirst(==(neighbor_local_seq), new_neighbor_children)
+                if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
+                    neighbors_count += 1
+                    continue
+                else
+                    neighbors_count += 1
+                    continue
+                end
+            # end
+        elseif (get_refinement_level(neighbor_cell) == get_refinement_level(cell))
+            if refinement_cache.marked_for_refinement[refinement_cache.old_cell_to_new_cell_map[neighbor_idx]]
+                neighbors_count += 1
                 continue
             else
                 neighbors_count += 1
                 continue
             end
-        else
-            neighbors_count += 1
-            continue
         end
     end
     return neighbors_count
