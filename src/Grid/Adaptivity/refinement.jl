@@ -8,8 +8,8 @@ function _resize_marked_for_refinement!(
     resize!(refinement_cache.marked_for_coarsening, new_length)
     resize!(refinement_cache.new_cell_to_old_cell_map, new_length)
 
-    refinement_cache.marked_for_refinement[length(grid.kopp_cells) + 1 : end] .= false
-    refinement_cache.marked_for_coarsening[length(grid.kopp_cells) + 1 : end] .= false
+    (@view refinement_cache.marked_for_refinement[length(grid.kopp_cells) + 1 : end]) .= false
+    (@view refinement_cache.marked_for_coarsening[length(grid.kopp_cells) + 1 : end]) .= false
     refinement_cache.new_cell_to_old_cell_map .= 0
     return nothing
 end
@@ -46,11 +46,10 @@ function _update_refinement_cache_isactive!(
         refinement_cache.new_cell_to_old_cell_map[refinement_cache.old_cell_to_new_cell_map[i]] = i
     end
     old_length = length(refinement_cache.interfaces_data_updated_indices)
-    resize!(refinement_cache.interfaces_data_updated_indices, old_length + n_refined_interfaces * ((2^(Dim-1) - 1)) + 2Dim * length(cellset))
-    refinement_cache.interfaces_data_updated_indices .= 0
+    # resize!(refinement_cache.interfaces_data_updated_indices, old_length + n_refined_interfaces * ((2^(Dim-1) - 1)) + 2Dim * length(cellset))
+    # refinement_cache.interfaces_data_updated_indices .= 0
     old_length = length(refinement_cache.interfaces_updated_indices)
-    resize!(refinement_cache.interfaces_updated_indices, old_length + n_refined_interfaces * ((2^(Dim-1) - 1)) + 2Dim * length(cellset))
-    refinement_cache.interfaces_data_updated_indices .= 0
+
     return nothing
 end
 function add_inherited_neighbors!(n_neighborhoods::Int, cell_idx::Int, refinement_cache::KoppRefinementCache, facet::Int, topology::KoppTopology, grid::KoppGrid{Dim}, new_seq::Int) where {Dim}
@@ -273,13 +272,17 @@ function count_neighbors_update_indexing!(
     return n_neighborhoods
 end
 # TODO: URGENT OPTIMIZE
-function get_ref_inherited_dofs!(children_dofs, parent_dofs, interpolation::Interpolation)
-    coords = Ferrite.reference_coordinates(interpolation)
-    Dim = Ferrite.getrefdim(interpolation)
+reference_coordinates_static(::Val{2}, ::Val{2}) = (nothing,)
+reference_coordinates_static(::Val{2}, ::Val{1}) = (Vec{2, Float64}((-1.0, -1.0)),
+Vec{2, Float64}((1.0, -1.0)),
+Vec{2, Float64}((1.0, 1.0)),
+Vec{2, Float64}((-1.0, 1.0)),)
+function get_ref_inherited_dofs!(children_dofs, parent_dofs, ::Val{Dim}, ::Val{Order}) where {Dim, Order}
+    coords = reference_coordinates_static(Val(Dim), Val(Order))
     root_coords = ntuple(i -> Node(coords[i]), length(coords))
-    dofs = zero(MVector{Ferrite.getnbasefunctions(interpolation) * 2^(Dim), Int})
+    dofs = zero(MVector{(Order+1)^Dim * 2^(Dim), Int})
     j = 0
-    for i in 1:2^Dim
+    @inbounds for i in 1:2^Dim
         child_coords = _process_seq(Dim, root_coords, i)
         for dof in child_coords
             j+=1
@@ -289,7 +292,7 @@ function get_ref_inherited_dofs!(children_dofs, parent_dofs, interpolation::Inte
         end
     end
     new_dofs = maximum(parent_dofs)
-    for i in eachindex(children_dofs)
+    @inbounds for i in eachindex(children_dofs)
         if iszero(dofs[i])
             children_dofs[i] =  new_dofs + 1
             new_dofs += 1
@@ -297,7 +300,7 @@ function get_ref_inherited_dofs!(children_dofs, parent_dofs, interpolation::Inte
             children_dofs[i] = parent_dofs[dofs[i]]
         end
     end
-    children_dofs
+    return nothing
 end
 
 function update_dofs!(
@@ -306,17 +309,18 @@ function update_dofs!(
     dh::DofHandler,
     temp_celldofs::Vector{Int},
     temp_cell_dofs_offset::Vector{Int},
-    temp_cell_to_subdofhandler::Vector{Int}) where Dim
+    temp_cell_to_subdofhandler::Vector{Int},
+    ::Val{Order}) where {Dim, Order}
     dh.cell_dofs_offset .= 0
     # dh.cell_dofs .= 1
-    for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+    @inbounds for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old dofhander vectors
         new == 0 && continue
         dh.cell_dofs_offset[new] = temp_cell_dofs_offset[old]
     end
     refined = 0
     coarsened = 0
-    @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+    @inbounds @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         # copy old dofhander vectors
         new == 0 && continue
         ndofs_per_cell = dh.subdofhandlers[temp_cell_to_subdofhandler[old]].ndofs_per_cell
@@ -336,7 +340,7 @@ function update_dofs!(
     end
     max_dof = 0
     refined = 0
-    @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+    @inbounds @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         new == 0 && continue
         # copy old dofhander vectors
         ndofs_per_cell = dh.subdofhandlers[temp_cell_to_subdofhandler[old]].ndofs_per_cell
@@ -360,9 +364,10 @@ function update_dofs!(
 
     @views for (old, cell_idx) in enumerate(refinement_cache.old_cell_to_new_cell_map)
         cell_idx == 0 && continue
+        # ASSUMPTION: single field
         if refinement_cache.marked_for_refinement[cell_idx]
             ndofs_per_cell = dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]].ndofs_per_cell
-            for new_seq in 1 : 2^Dim
+            @inbounds for new_seq in 1 : 2^Dim
                 child_idx = cell_idx + new_seq
                 # DofHandler add new dofs and offsets
                 # For DG only
@@ -372,8 +377,8 @@ function update_dofs!(
             end
             children_dofs = dh.cell_dofs[dh.cell_dofs_offset[cell_idx+1] : dh.cell_dofs_offset[cell_idx+1] + (2^Dim) * ndofs_per_cell - 1]
             parent_dofs = dh.cell_dofs[dh.cell_dofs_offset[cell_idx] : dh.cell_dofs_offset[cell_idx + 1] - 1]
-            # ASSUMPTION: single field
-            get_ref_inherited_dofs!(children_dofs, parent_dofs, dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]].field_interpolations[1])
+
+            get_ref_inherited_dofs!(children_dofs, parent_dofs, Val(Dim), Val(Order))
         elseif refinement_cache.marked_for_coarsening[cell_idx]
         end
 

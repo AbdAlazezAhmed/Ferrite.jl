@@ -15,24 +15,30 @@ function _calc_interfaces_dict_prev(
     grid::KoppGrid{Dim},
     topology::KoppTopology) where {Dim}
     NFacets = 2 * Dim
-    ii = Ferrite.InterfaceIterator(grid, topology)
-    interfaces_dict_prev = OrderedSet{FacetIndex}()
-    for ic in ii
-        push!(interfaces_dict_prev, FacetIndex(Ferrite.cellid(ic.a), ic.a.current_facet_id))
-    end
+    interfaces_dict_prev = Dict{FacetIndex, Int}()
+    interfaces_dict_prev_vec = Vector{Pair{FacetIndex, Int}}(undef, length(topology.neighbors)÷2)
+    # sizehint!(interfaces_dict_prev, length(topology.neighbors)÷2)
+    i = 1
+    # @time "iter" begin
+        for ic in Ferrite.InterfaceIterator(grid, topology)
+            interfaces_dict_prev_vec[i] = FacetIndex(Ferrite.cellid(ic.a), ic.a.current_facet_id) => i
+            i += 1
+        end
+    # end
+    interfaces_dict_prev = Dict(interfaces_dict_prev_vec)
     return interfaces_dict_prev
 end
 
 function _calc_interfaces_map(grid::KoppGrid{Dim},
     topology::KoppTopology,
     refinement_cache::KoppRefinementCache,
-    dict_prev::OrderedSet) where {Dim}
+    dict_prev::Dict) where {Dim}
     interface_index = 1
     ii = Ferrite.InterfaceIterator(grid, topology)
     for ic in ii
         cell_idx = refinement_cache.new_cell_to_old_cell_map[Ferrite.cellid(ic.a)]
         iszero(cell_idx) && (interface_index += 1; continue)
-        old_index = OrderedCollections.ht_keyindex(dict_prev.dict, FacetIndex(cell_idx, ic.a.current_facet_id), true)
+        old_index = dict_prev[FacetIndex(cell_idx, ic.a.current_facet_id)]
         (old_index<=0) && (interface_index += 1; continue)
         refinement_cache.interfaces_data_updated_indices[old_index] = interface_index
         interface_index += 1

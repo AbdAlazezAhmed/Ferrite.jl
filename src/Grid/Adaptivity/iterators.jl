@@ -44,18 +44,43 @@ function Ferrite.InterfaceIterator(gridordh::Union{Ferrite.AbstractGrid,Ferrite.
     return Ferrite.InterfaceIterator(Ferrite.InterfaceCache(gridordh), grid, topology)
 end
 
-function Base.iterate(ii::Ferrite.InterfaceIterator{IC,<:KoppGrid{sdim}}, state = (1,1)) where {sdim,IC}
-    while true
-        it = iterate(ii.topology, state)
-        it === nothing && return nothing
-        (facet_a, neighbors), state = it
-        if length(neighbors) != 1
-            continue
+@inline function interface_topology_iterate(topology::KoppTopology, state::NTuple{2, Int} = (1,1))
+    state[1] > size(topology.cell_facet_neighbors_offset, 2) && return ((FacetIndex(0, 0), FacetIndex(0, 0)), (-1, -1))
+    if topology.cell_facet_neighbors_length[state[2], state[1]] != 1
+        if state[2] < size(topology.cell_facet_neighbors_offset, 1)
+            ret = (FacetIndex(state[1], state[2]), FacetIndex(0,0))
+            state = (state[1], state[2] + 1)
+        else
+            ret = (FacetIndex(state[1], state[2]), FacetIndex(0,0))
+            state = (state[1] + 1, 1)
         end
-        facet_b = neighbors[]
-        get_refinement_level(ii.grid.kopp_cells[facet_a[1]]) == get_refinement_level(ii.grid.kopp_cells[facet_b[1]]) && facet_a[1] > facet_b[1] && continue
-        reinit!(ii.cache, facet_a, facet_b)
-        return (ii.cache, state)
+    else
+        neighborhood = topology.neighbors[topology.cell_facet_neighbors_offset[state[2], state[1]]]
+        if state[2] < size(topology.cell_facet_neighbors_offset, 1)
+            ret = (FacetIndex(state[1], state[2]), neighborhood)
+            state = (state[1], state[2] + 1)
+        else
+            ret = (FacetIndex(state[1], state[2]), neighborhood)
+            state = (state[1] + 1, 1)
+        end
     end
+
+    return (ret, state)
+end
+
+function Base.iterate(ii::Ferrite.InterfaceIterator{IC,<:KoppGrid{sdim}}, state = (1,1)) where {sdim,IC}
+        while true
+            it = interface_topology_iterate(ii.topology, state)
+            (facet_a, neighbors), state = it
+            state == (-1, -1) && return nothing
+            if neighbors == FacetIndex(0,0)
+                continue
+            end
+            facet_b = neighbors
+            get_refinement_level(ii.grid.kopp_cells[facet_a[1]]) == get_refinement_level(ii.grid.kopp_cells[facet_b[1]]) && facet_a[1] > facet_b[1] && continue
+            reinit!(ii.cache, facet_a, facet_b)
+            return (ii.cache, state)
+        end
+
     return
 end

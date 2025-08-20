@@ -975,7 +975,7 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
     # )))
 
     refshape = RefQuadrilateral
-    grid = generate_grid(KoppCell{2, Int}, (40,40), Ferrite.Vec((-10.0,-10.0)), Ferrite.Vec((10.0,10.0)))
+    grid = generate_grid(KoppCell{2, Int}, (10,10), Ferrite.Vec((-10.0,-10.0)), Ferrite.Vec((10.0,10.0)))
     # grid = generate_grid(KoppCell{2, Int}, (40,40), Ferrite.Vec((-20.0,0.0)), Ferrite.Vec((20.0,40.25)))
     # grid = generate_grid(KoppCell{2, Int}, (3,3), Ferrite.Vec((-1.0,0.0)), Ferrite.Vec((1.0,1.25)))
     # transform_coordinates!(grid.base_grid, x->Ferrite.Vec(
@@ -1024,8 +1024,9 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
     sync = LTSAMRSynchronizer(grid, dh, lts_values, refinement_cache, topology, 0.1)
     u = sync.data_stores[4].data
     # Ferrite.apply_analytical!(u, dh, :u, x -> 1/((100000*x[1])^2 + 0.1) + sin(x[2]^3) - 1 )
-    Ferrite.apply_analytical!(u, dh, :u, x -> 1 - (x[1]^2 + x[2]^2)/200)
+    # Ferrite.apply_analytical!(u, dh, :u, x -> 1 - (x[1]^2 + x[2]^2)/200)
     # Ferrite.apply_analytical!(u, dh, :u, x -> spiral_field(x[1], x[2]) )
+    Ferrite.apply_analytical!(u, dh, :u, x -> x[1] > 0 && x[2] > 0 ? 10.0 : 0.0 )
     # Ferrite.apply_analytical!(sync.data_stores_prev[4].data, dh, :u, x -> spiral_field(x[1], x[2]) )
     # Ferrite.apply_analytical!(sync.data_stores_prev[4].data, dh, :u, x -> 1/((100000*x[1])^2 + 0.1) + sin(x[2]^3) - 1 )
     needs_refinement = true
@@ -1128,15 +1129,16 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
 
         for t ∈ 0.0:Δt:T
             u_new = copy(u)
-            fgrid = to_ferrite_grid(grid)
-            dh2 = deepcopy(sync.dh)
-            resize!(dh2.grid.cells, length(fgrid.cells))
-            dh2.grid.cells .= fgrid.cells
-            resize!(dh2.grid.nodes, length(fgrid.nodes))
-            dh2.grid.nodes .= fgrid.nodes
-            K = [zeros(Float64, ndofs_cell, (1 + sum(topology.cell_facet_neighbors_length[:, cell])) * ndofs_cell) for cell in 1:length(fgrid.cells)]
-            dofs_map = [zeros(Int,(1 + sum(topology.cell_facet_neighbors_length[:, cell])) * ndofs_cell) for cell in 1:length(fgrid.cells)]
-            for cc in CellIterator(dh2)
+            error_vector = zeros(length(grid.kopp_cells))
+            # fgrid = to_ferrite_grid(grid)
+            # dh2 = deepcopy(sync.dh)
+            # resize!(dh2.grid.cells, length(fgrid.cells))
+            # dh2.grid.cells .= fgrid.cells
+            # resize!(dh2.grid.nodes, length(fgrid.nodes))
+            # dh2.grid.nodes .= fgrid.nodes
+            K = [zeros(Float64, ndofs_cell, (1 + sum(topology.cell_facet_neighbors_length[:, cell])) * ndofs_cell) for cell in 1:length(grid.kopp_cells)]
+            dofs_map = [zeros(Int,(1 + sum(topology.cell_facet_neighbors_length[:, cell])) * ndofs_cell) for cell in 1:length(grid.kopp_cells)]
+            for cc in CellIterator(grid)
                 grid.kopp_cells[cellid(cc)].isleaf || continue
                 ndofs = 4
                 K[cellid(cc)][1:ndofs,1:ndofs] .= sync.data_stores[2].data[:,:,cellid(cc)]
@@ -1229,14 +1231,15 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
                 end
                 # display(sync.data_stores[3].data[:, :, interface_index])
                 interface_index += 1
-
+                reinit!(interfacevalues, ic, topology)
+                estimate_kelly_interface!(Float64, error_vector, u[[celldofs(dh, cell_a)..., celldofs(dh, cell_b)...]], ic, sync.values_cache.interface_values)
             end
-            for cc in CellIterator(dh2)
+            for cc in CellIterator(grid)
                 grid.kopp_cells[cellid(cc)].isleaf || continue
                 # @info cellid(cc) dofs_map[cellid(cc)]
                 # display((@view sync.data_stores[1].data[:,:,cellid(cc)]))
                 Minv = inv((@view sync.data_stores[1].data[:,:,cellid(cc)]))
-                u_new[celldofs(cc)] .= u[celldofs(cc)] + Δt * Minv * (-K[cellid(cc)]*u[dofs_map[cellid(cc)]])
+                u_new[celldofs(dh, cellid(cc))] .= u[celldofs(dh, cellid(cc))] + Δt * Minv * (-K[cellid(cc)]*u[dofs_map[cellid(cc)]])
                 # λ,_ = eigen(Minv * (-K[:,:, cellid(cc)]))
             end
             display(extrema(u_new))
@@ -1247,46 +1250,56 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
             end
             needs_refinement = true
             refinement_iteration = 0
-            threshold = 0.2
+            threshold = 0.8
             while needs_refinement == true
                 needs_refinement = false
                 refinement_set = OrderedSet{CellIndex}()
                 coarsening_set = OrderedSet{CellIndex}()
-                fgrid = to_ferrite_grid(grid)
-                dh2 = deepcopy(sync.dh)
-                resize!(dh2.grid.cells, length(fgrid.cells))
-                dh2.grid.cells .= fgrid.cells
-                resize!(dh2.grid.nodes, length(fgrid.nodes))
-                dh2.grid.nodes .= fgrid.nodes
-                coarsening_vector = zeros(Int, length(fgrid.cells))
-                @time "doing shit" for cc in CellIterator(dh2)
+                # fgrid = to_ferrite_grid(grid)
+                # dh2 = deepcopy(sync.dh)
+                # resize!(dh2.grid.cells, length(fgrid.cells))
+                # dh2.grid.cells .= fgrid.cells
+                # resize!(dh2.grid.nodes, length(fgrid.nodes))
+                # dh2.grid.nodes .= fgrid.nodes
+                coarsening_vector = zeros(Int, length(grid.kopp_cells))
+                @info extrema(error_vector)
+                for cc in CellIterator(grid)
                     grid.kopp_cells[cellid(cc)].isleaf || continue
                     h = compute_h(cc)
-                    if mean(u[celldofs(cc)]) * h > threshold
+                    if sqrt(error_vector[cellid(cc)]) > threshold
+                        # mean(u[celldofs(cc)]) * h > threshold
+                        get_refinement_level(grid.kopp_cells[cellid(cc)]) >= 3 && continue
                         push!(refinement_set, CellIndex(cellid(cc)))
                         needs_refinement = true
                     end
                 end
                 refine!(grid, topology, refinement_cache, sync, refinement_set)
+                resize!(error_vector, length(grid.kopp_cells))
+                error_vector .= 0.0
+                for ic in InterfaceIterator(grid, topology)
+                    cell_a = cellid(ic.a)
+                    cell_b = cellid(ic.b)
+                    reinit!(interfacevalues, ic, topology)
+                    estimate_kelly_interface!(Float64, error_vector, u[[celldofs(dh, cell_a)..., celldofs(dh, cell_b)...]], ic, sync.values_cache.interface_values)
+                end
 
-
-                fgrid = to_ferrite_grid(grid)
-                dh2 = deepcopy(sync.dh)
-                resize!(dh2.grid.cells, length(fgrid.cells))
-                dh2.grid.cells .= fgrid.cells
-                resize!(dh2.grid.nodes, length(fgrid.nodes))
-                dh2.grid.nodes .= fgrid.nodes
-                coarsening_vector = zeros(Int, length(fgrid.cells))
-                @time "doing shit" for cc in CellIterator(dh2)
+                # fgrid = to_ferrite_grid(grid)
+                # dh2 = deepcopy(sync.dh)
+                # resize!(dh2.grid.cells, length(fgrid.cells))
+                # dh2.grid.cells .= fgrid.cells
+                # resize!(dh2.grid.nodes, length(fgrid.nodes))
+                # dh2.grid.nodes .= fgrid.nodes
+                coarsening_vector = zeros(Int, length(grid.kopp_cells))
+                for cc in CellIterator(grid)
                     grid.kopp_cells[cellid(cc)].isleaf || continue
-                    h = compute_h(cc)
-                    if threshold > mean(u[celldofs(cc)]) * h
+                    # h = compute_h(cc)
+                    if threshold/10 > sqrt(error_vector[cellid(cc)])
                         parent = grid.kopp_cells[cellid(cc)].parent
                         parent <= 0 && continue
                         coarsening_vector[parent] += 1
                     end
                 end
-                @time "doing shit" for cc in CellIterator(dh2)
+                for cc in CellIterator(grid)
                     grid.kopp_cells[cellid(cc)].isleaf && continue
                     coarsening_vector[cellid(cc)] <4 && continue
                     push!(coarsening_set, CellIndex(cellid(cc)))
@@ -1297,14 +1310,25 @@ include("/home/amohamed/.julia/dev/Ferrite/src/Grid/Adaptivity/kopp.jl")
                 refinement_iteration == 1 && break
                 @warn refinement_iteration
             end
-            fgrid = to_ferrite_grid(grid)
-            dh2 = deepcopy(sync.dh)
-            resize!(dh2.grid.cells, length(fgrid.cells))
-            dh2.grid.cells .= fgrid.cells
-            resize!(dh2.grid.nodes, length(fgrid.nodes))
-            dh2.grid.nodes .= fgrid.nodes
+            begin
+                fgrid = to_ferrite_grid(grid)
+                dh2 = deepcopy(sync.dh)
+                resize!(dh2.grid.cells, length(fgrid.cells))
+                dh2.grid.cells .= fgrid.cells
+                resize!(dh2.grid.nodes, length(fgrid.nodes))
+                dh2.grid.nodes .= fgrid.nodes
+            end
+            resize!(error_vector, length(grid.kopp_cells))
+            error_vector .= 0.0
+            for ic in InterfaceIterator(grid, topology)
+                cell_a = cellid(ic.a)
+                cell_b = cellid(ic.b)
+                reinit!(interfacevalues, ic, topology)
+                estimate_kelly_interface!(Float64, error_vector, u[[celldofs(dh, cell_a)..., celldofs(dh, cell_b)...]], ic, sync.values_cache.interface_values)
+            end
             VTKGridFile("amr-$t.vtu", fgrid; write_discontinuous = true) do vtk
                 write_solution(vtk, dh2, u, "_")
+                write_cell_data(vtk, error_vector, "__")
                 pvd[t] = vtk
             end
             # vtk_save(pvd);

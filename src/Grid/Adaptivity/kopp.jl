@@ -122,7 +122,7 @@ function refine!(
         sync::AbstractAMRSynchronizer,
         cellset::OrderedSet{CellIndex}
         ) where Dim
-    @time  "_calc_interfaces_dict_prev" interfaces_dict_prev = _calc_interfaces_dict_prev(grid, topology)
+    interfaces_dict_prev = _calc_interfaces_dict_prev(grid, topology)
 
     n_refined_cells = length(cellset)
     new_length = length(grid.kopp_cells)+(2^Dim)*n_refined_cells
@@ -130,24 +130,23 @@ function refine!(
     _resize_marked_for_refinement!(grid, refinement_cache, cellset)
     refinement_cache.old_cell_to_new_cell_map .= 1:length(refinement_cache.old_cell_to_new_cell_map)
     # Counting how many refined cells and interfaces and calculating the new index
-    @time "_update_refinement_cache_isactive" _update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
+    _update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
 
-    @time "_resize_topology" _resize_topology!(topology, new_length, Val(Dim))
+    _resize_topology!(topology, new_length, Val(Dim))
 
     zero_topology!(topology)
 
-    @time  "count_neighbors_update_indexing!" n_neighborhoods = count_neighbors_update_indexing!(grid, topology, refinement_cache)
+    n_neighborhoods = count_neighbors_update_indexing!(grid, topology, refinement_cache)
     # sync_amr_refinement_forward!()
-    @show n_neighborhoods
-    @time  "sync_amr_refinement_forward!" sync_amr_refinement_forward!(grid, sync, refinement_cache, n_refined_cells, n_neighborhoods)
+    sync_amr_refinement_forward!(grid, sync, refinement_cache, n_refined_cells, n_neighborhoods)
 
     # Resizing the vectors
 
-    @time  "_resize_bunch_of_stuff!" _resize_bunch_of_stuff!(grid, topology, n_neighborhoods, new_length)
+    _resize_bunch_of_stuff!(grid, topology, n_neighborhoods, new_length)
 
-    @time  "update_cells!"  update_cells!(grid, refinement_cache)
+    update_cells!(grid, refinement_cache)
 
-    @time  "update_root_idx!" update_root_idx!(grid, topology, refinement_cache)
+    update_root_idx!(grid, topology, refinement_cache)
 
 
     # kopp_cache.ansatz_isactive[ndofs_old : end] .= true
@@ -155,15 +154,15 @@ function refine!(
 
 
     # # deactivate all parents' shape functions
-    @time "update_neighbors!" update_neighbors!(grid, topology, refinement_cache)
-    @time  "_calc_interfaces_map" _calc_interfaces_map(grid, topology, refinement_cache, interfaces_dict_prev)
+    update_neighbors!(grid, topology, refinement_cache)
+    _calc_interfaces_map(grid, topology, refinement_cache, interfaces_dict_prev)
 
     # # Refine KoppCache
     # resize!(sync.u, new_length * dh.subdofhandlers[1].ndofs_per_cell)
 
     # update_koppcache!(grid, refinement_cache, topology, temp_topology, sync, kopp_values, dh, NFacets)
 
-    @time  "sync_amr_refinement_backward!" sync_amr_refinement_backward!(sync, refinement_cache, grid, topology)
+    sync_amr_refinement_backward!(sync, refinement_cache, grid, topology)
 
     # # # resize refinement cache
     resize!(refinement_cache.old_cell_to_new_cell_map, new_length)
@@ -180,6 +179,9 @@ function refine!(
     copy!(topology.neighbors_prev, topology.neighbors)
     resize!(topology.root_idx_prev, length(topology.root_idx))
     copy!(topology.root_idx_prev, topology.root_idx)
+
+    resize!(refinement_cache.interfaces_data_updated_indices, n_neighborhoods ÷ 2)
+    refinement_cache.interfaces_data_updated_indices .= 0
     refinement_cache.marked_for_refinement .= false
     refinement_cache.marked_for_coarsening .= false
     return nothing
@@ -192,14 +194,14 @@ function coarsen!(
         sync::AbstractAMRSynchronizer,
         cellset::OrderedSet{CellIndex}
         ) where Dim
-    @time  "_calc_interfaces_dict_prev" interfaces_dict_prev = _calc_interfaces_dict_prev(grid, topology)
+    interfaces_dict_prev = _calc_interfaces_dict_prev(grid, topology)
     n_coarsened_cells = length(cellset)
     new_length = length(grid.kopp_cells)-(2^Dim)*n_coarsened_cells
     # we need to resize this one early
     __resize_marked_for_refinement!(grid, refinement_cache, cellset)
     refinement_cache.old_cell_to_new_cell_map .= 1:length(refinement_cache.old_cell_to_new_cell_map)
     # Counting how many refined cells and interfaces and calculating the new index
-    @time "__update_refinement_cache_isactive" __update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
+    __update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
     _resize_topology!(topology, new_length, Val(Dim))
 
     zero_topology!(topology)
@@ -248,6 +250,9 @@ function coarsen!(
     resize!(topology.root_idx_prev, length(topology.root_idx))
     copy!(topology.root_idx_prev, topology.root_idx)
 
+
+    resize!(refinement_cache.interfaces_data_updated_indices, n_neighborhoods ÷ 2)
+    refinement_cache.interfaces_data_updated_indices .= 0
     # # # # resize refinement cache
     # resize!(refinement_cache.interfaces_updated_indices, length(kopp_cache.interface_matrices) + n_refined_interfaces * (2^(Dim-1) - 1))
     refinement_cache.marked_for_coarsening .= false
