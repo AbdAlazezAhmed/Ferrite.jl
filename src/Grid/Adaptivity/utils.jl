@@ -36,6 +36,10 @@ function _calc_interfaces_map(grid::KoppGrid{Dim},
     interface_index = 1
     ii = Ferrite.InterfaceIterator(grid, topology)
     for ic in ii
+        (refinement_cache.marked_for_refinement[Ferrite.cellid(ic.a)] ||
+        refinement_cache.marked_for_refinement[Ferrite.cellid(ic.b)] ||
+        refinement_cache.marked_for_coarsening[Ferrite.cellid(ic.a)] ||
+        refinement_cache.marked_for_coarsening[Ferrite.cellid(ic.b)] ) && continue
         cell_idx = refinement_cache.new_cell_to_old_cell_map[Ferrite.cellid(ic.a)]
         iszero(cell_idx) && (interface_index += 1; continue)
         old_index = dict_prev[FacetIndex(cell_idx, ic.a.current_facet_id)]

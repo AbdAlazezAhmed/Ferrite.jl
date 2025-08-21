@@ -192,68 +192,13 @@ begin
                 K[cellid(cc)][1:ndofs,1:ndofs] .= sync.data_stores[2].data[:,:,cellid(cc)]
             end
 
-            interface_index = 1
-            dofs_temp_storage = zeros(Int, ndofs_cell)
-            @time "assembing K_interface" @inbounds @views for ic in InterfaceIterator(grid, topology)
-                cell_a = cellid(ic.a)
-                cell_b = cellid(ic.b)
-                ndofs = 4
-                K[cell_a][1:ndofs,1:ndofs] .+= sync.data_stores[3].data[1:ndofs,1:ndofs,interface_index]
-                celldofs!(dofs_temp_storage, dh, cell_a)
-                dofs_map[cell_a][1:ndofs] .= dofs_temp_storage
 
-                neighbor_idx = 1
-                found = false
-                @inbounds for facet in 1:4
-                    if found
-                        break
-                    end
-                    neighborhood = getneighborhood(topology, FacetIndex(cell_a, facet))
-
-                    @inbounds for (i, neighbor) in enumerate(neighborhood)
-                        if neighbor[1] == cell_b
-                            dof_start = ndofs + 1 + (neighbor_idx-1)*ndofs
-                            dof_end = ndofs + neighbor_idx*ndofs
-                            K[cell_a][1:ndofs,dof_start:dof_end] += sync.data_stores[3].data[1:ndofs, ndofs + 1:end, interface_index]
-                            celldofs!(dofs_temp_storage, dh, neighbor[1])
-                            dofs_map[cell_a][dof_start:dof_end] .= dofs_temp_storage
-                            found = true
-                            break
-                        end
-                        neighbor_idx += 1
-                    end
-                end
-
-                K[cell_b][1:ndofs,1:ndofs] .+= sync.data_stores[3].data[ndofs+1:end, ndofs+1:end,interface_index]
-                dofs_map[cell_b][1:ndofs] .= celldofs(dh, cell_b)
-
-                neighbor_idx = 1
-                global found = false
-                for facet in 1:4
-                    if found
-                        break
-                    end
-                    neighborhood = getneighborhood(topology, FacetIndex(cell_b, facet))
-                    for (i, neighbor) in enumerate(neighborhood)
-                        if neighbor[1] == cell_a
-                            dof_start = ndofs + 1 + (neighbor_idx-1)*ndofs
-                            dof_end = ndofs + neighbor_idx*ndofs
-                            K[cell_b][1:ndofs,dof_start:dof_end] += sync.data_stores[3].data[ndofs + 1:end, 1:ndofs, interface_index]
-                            dofs_map[cell_b][dof_start:dof_end] .= celldofs(dh, neighbor[1])
-                            found = true
-                            break
-                        end
-                        neighbor_idx += 1
-                    end
-                end
-                interface_index += 1
-                reinit!(interfacevalues, ic, topology)
-                estimate_kelly_interface!(Float64, error_vector, u[[celldofs(dh, cell_a)..., celldofs(dh, cell_b)...]], ic, sync.values_cache.interface_values)
-            end
             @views for cc in CellIterator(grid)
                 grid.kopp_cells[cellid(cc)].isleaf || continue
                 Minv = inv((sync.data_stores[1].data[:,:,cellid(cc)]))
-                u_new[celldofs(dh, cellid(cc))] .= u[celldofs(dh, cellid(cc))] + Δt * Minv * (-K[cellid(cc)]*u[dofs_map[cellid(cc)]])
+
+                celldofs!(dofs_temp_storage, dh, cellid(cc))
+                u_new[dofs_temp_storage] .= u[dofs_temp_storage] + Δt * Minv * (-K[cellid(cc)]*u[dofs_map[cellid(cc)]])
             end
             display(extrema(u_new))
             u .= u_new
@@ -272,7 +217,7 @@ begin
                 sizehint!(coarsening_set, length(grid.kopp_cells))
                 coarsening_vector = zeros(Int, length(grid.kopp_cells))
                 @info extrema(error_vector)
-                for cc in CellIterator(grid)
+                @inbounds for cc in CellIterator(grid, 1:length(grid.kopp_cells))
                     grid.kopp_cells[cellid(cc)].isleaf || continue
                     if sqrt(error_vector[cellid(cc)]) > threshold
                         get_refinement_level(grid.kopp_cells[cellid(cc)]) >= 1 && continue
@@ -281,17 +226,20 @@ begin
                     end
                 end
                 refine!(grid, topology, refinement_cache, sync, refinement_set)
-                # return
                 resize!(error_vector, length(grid.kopp_cells))
                 error_vector .= 0.0
                 for ic in InterfaceIterator(grid, topology)
                     cell_a = cellid(ic.a)
                     cell_b = cellid(ic.b)
+                    # TODO: urgent why reinit allocates
                     reinit!(interfacevalues, ic, topology)
-                    estimate_kelly_interface!(Float64, error_vector, u[[celldofs(dh, cell_a)..., celldofs(dh, cell_b)...]], ic, sync.values_cache.interface_values)
+                    celldofs!(( dofs_temp_storage2[1:ndofs_cell]), dh, cell_a)
+                    celldofs!(( dofs_temp_storage2[ndofs_cell + 1:end]), dh, cell_b)
+
+                    estimate_kelly_interface!(Float64, error_vector, u[dofs_temp_storage2], ic, sync.values_cache.interface_values)
                 end
                 coarsening_vector = zeros(Int, length(grid.kopp_cells))
-                for cc in CellIterator(grid)
+                for cc in CellIterator(grid, 1:length(grid.kopp_cells))
                     grid.kopp_cells[cellid(cc)].isleaf || continue
                     if threshold/10 > sqrt(error_vector[cellid(cc)])
                         parent = grid.kopp_cells[cellid(cc)].parent
@@ -299,7 +247,7 @@ begin
                         coarsening_vector[parent] += 1
                     end
                 end
-                for cc in CellIterator(grid)
+                for cc in CellIterator(grid, 1:length(grid.kopp_cells))
                     grid.kopp_cells[cellid(cc)].isleaf && continue
                     coarsening_vector[cellid(cc)] <4 && continue
                     push!(coarsening_set, CellIndex(cellid(cc)))
@@ -310,14 +258,6 @@ begin
                 refinement_iteration == 1 && break
                 @warn refinement_iteration
             end
-            begin
-                fgrid = to_ferrite_grid(grid)
-                dh2 = deepcopy(sync.dh)
-                resize!(dh2.grid.cells, length(fgrid.cells))
-                dh2.grid.cells .= fgrid.cells
-                resize!(dh2.grid.nodes, length(fgrid.nodes))
-                dh2.grid.nodes .= fgrid.nodes
-            end
             resize!(error_vector, length(grid.kopp_cells))
             resize!(u_new, length(u))
             error_vector .= 0.0
@@ -325,12 +265,25 @@ begin
                 cell_a = cellid(ic.a)
                 cell_b = cellid(ic.b)
                 reinit!(interfacevalues, ic, topology)
-                estimate_kelly_interface!(Float64, error_vector, u[[celldofs(dh, cell_a)..., celldofs(dh, cell_b)...]], ic, sync.values_cache.interface_values)
+                celldofs!(( dofs_temp_storage2[1:ndofs_cell]), dh, cell_a)
+                celldofs!(( dofs_temp_storage2[ndofs_cell + 1:end]), dh, cell_b)
+
+                estimate_kelly_interface!(Float64, error_vector, u[dofs_temp_storage2], ic, sync.values_cache.interface_values)
             end
-            io_enabled && VTKGridFile("amr-$t.vtu", fgrid; write_discontinuous = true) do vtk
-                write_solution(vtk, dh2, u, "_")
-                write_cell_data(vtk, error_vector, "__")
-                pvd[t] = vtk
+            if io_enabled
+                fgrid = to_ferrite_grid(grid)
+                dh2 = deepcopy(sync.dh)
+                resize!(dh2.grid.cells, length(fgrid.cells))
+                dh2.grid.cells .= fgrid.cells
+                resize!(dh2.grid.nodes, length(fgrid.nodes))
+                dh2.grid.nodes .= fgrid.nodes
+
+                VTKGridFile("amr-$t.vtu", fgrid; write_discontinuous = true) do vtk
+                    write_solution(vtk, dh2, u, "_")
+                    write_cell_data(vtk, error_vector, "__")
+                    pvd[t] = vtk
+                end
+
             end
         end
 

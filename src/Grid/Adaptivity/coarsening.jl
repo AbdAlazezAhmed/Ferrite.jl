@@ -6,8 +6,8 @@ function __resize_marked_for_refinement!(
     new_length = length(grid.kopp_cells) - (2^Dim) * n_refined_cells
     resize!(refinement_cache.marked_for_coarsening, new_length)
     resize!(refinement_cache.new_cell_to_old_cell_map, new_length)
-
-    refinement_cache.marked_for_coarsening[length(grid.kopp_cells) + 1 : end] .= false
+    # marked_for_coarsening = @view refinement_cache.marked_for_coarsening[length(grid.kopp_cells) + 1 : end]
+    refinement_cache.marked_for_coarsening .= false
     refinement_cache.new_cell_to_old_cell_map .= 0
     return nothing
 end
@@ -19,9 +19,13 @@ function __update_refinement_cache_isactive!(
     cellset::AbstractSet{CellIndex}
     ) where {Dim}
     n_refined_interfaces = 0
-    for (i, cell) in enumerate(grid.kopp_cells)
+
+    @inbounds @views for (i, cell) in enumerate(grid.kopp_cells)
         if CellIndex(i) ∈ cellset
-            refinement_cache.old_cell_to_new_cell_map[i+(2^Dim)+1:end] .= (@view refinement_cache.old_cell_to_new_cell_map[i+(2^Dim)+1:end]) .- 2^Dim
+            old_to_new = refinement_cache.old_cell_to_new_cell_map[i+(2^Dim)+1:end]
+            if length(old_to_new) > 0
+                old_to_new .-= 2^Dim
+            end
             refinement_cache.old_cell_to_new_cell_map[i+1:i+(2^Dim)] .= 0
             refinement_cache.marked_for_coarsening[refinement_cache.old_cell_to_new_cell_map[i]] = true
             # kopp_cache.ansatz_isactive[@view dh.cell_dofs[dh.cell_dofs_offset[i]:dh.cell_dofs_offset[i]+dh.subdofhandlers[1].ndofs_per_cell-1]] .= true

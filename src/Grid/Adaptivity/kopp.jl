@@ -202,6 +202,7 @@ function coarsen!(
     refinement_cache.old_cell_to_new_cell_map .= 1:length(refinement_cache.old_cell_to_new_cell_map)
     # Counting how many refined cells and interfaces and calculating the new index
     __update_refinement_cache_isactive!(grid, topology, refinement_cache, cellset)
+
     _resize_topology!(topology, new_length, Val(Dim))
 
     zero_topology!(topology)
