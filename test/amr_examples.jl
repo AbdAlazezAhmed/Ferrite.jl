@@ -74,7 +74,7 @@ begin
     end
 
     sync = LTSAMRSynchronizer(grid, dh, lts_values, refinement_cache, topology, 0.1)
-    u = sync.data_stores[4].data
+    u = sync.data_stores.solution_vector.data
     # Ferrite.apply_analytical!(u, dh, :u, x -> 1/((100000*x[1])^2 + 0.1) + sin(x[2]^3) - 1 )
     # Ferrite.apply_analytical!(u, dh, :u, x -> 1 - (x[1]^2 + x[2]^2)/200)
     Ferrite.apply_analytical!(u, dh, :u, x -> spiral_field(x[1], x[2]) )
@@ -177,99 +177,85 @@ begin
         T = 100*Δt
         T = 1.0
         ndofs_cell = 4
-        u = sync.data_stores[4].data
+        u = sync.data_stores.solution_vector.data
         u_new = copy(u)
-        error_vector = zeros(length(grid.kopp_cells))
-
+        error_vector = sync.data_stores.error_vector.data
+        dofs_map = sync.data_stores.dofs_map
+        dofs_temp_storage = zeros(Int, ndofs_cell)
         @views for t ∈ 0.0:Δt:T
             u_new .= 0.0
-            error_vector .= 0.0
-            K = [zeros(Float64, ndofs_cell, (1 + sum(topology.cell_facet_neighbors_length[:, cell])) * ndofs_cell) for cell in 1:length(grid.kopp_cells)]
-            dofs_map = [zeros(Int,(1 + sum(topology.cell_facet_neighbors_length[:, cell])) * ndofs_cell) for cell in 1:length(grid.kopp_cells)]
-            @inbounds @views for cc in CellIterator(grid)
-                grid.kopp_cells[cellid(cc)].isleaf || continue
-                ndofs = 4
-                K[cellid(cc)][1:ndofs,1:ndofs] .= sync.data_stores[2].data[:,:,cellid(cc)]
-            end
-
+            # error_vector .= 0.0
+            @show (extrema(u))
 
             @views for cc in CellIterator(grid)
                 grid.kopp_cells[cellid(cc)].isleaf || continue
-                Minv = inv((sync.data_stores[1].data[:,:,cellid(cc)]))
-
+                offset_a = dofs_map.offsets[cellid(cc)]
+                end_idx = cellid(cc) == length(dofs_map.offsets) ? length(dofs_map.dofs) : dofs_map.offsets[cellid(cc) + 1] - 1
+                dofs_a = dofs_map.dofs[offset_a : end_idx]
+                K = sync.data_stores.assembled_stiffness_matrix.data[1:ndofs_cell, offset_a : end_idx]
+                Minv = inv((sync.data_stores.cell_mass_matrix.data[:,:,cellid(cc)]))
                 celldofs!(dofs_temp_storage, dh, cellid(cc))
-                u_new[dofs_temp_storage] .= u[dofs_temp_storage] + Δt * Minv * (-K[cellid(cc)]*u[dofs_map[cellid(cc)]])
+                u_new[dofs_temp_storage] .= u[dofs_temp_storage] + Δt * Minv * (-K*u[dofs_a])
             end
-            display(extrema(u_new))
+            @show (extrema(u_new))
             u .= u_new
             if norm(u) > 1e3
                 @show "Broken at $t"
+                fgrid = to_ferrite_grid(grid)
+                dh2 = deepcopy(sync.dh)
+                resize!(dh2.grid.cells, length(fgrid.cells))
+                dh2.grid.cells .= fgrid.cells
+                resize!(dh2.grid.nodes, length(fgrid.nodes))
+                dh2.grid.nodes .= fgrid.nodes
+                VTKGridFile("amr-$t-broken.vtu", fgrid; write_discontinuous = true) do vtk
+                    write_solution(vtk, dh2, u, "_")
+                    write_cell_data(vtk, error_vector, "__")
+                end
                 break
             end
             needs_refinement = true
             refinement_iteration = 0
             threshold = 0.2
-            while needs_refinement == true
-                needs_refinement = false
-                refinement_set = OrderedSet{CellIndex}()
-                coarsening_set = OrderedSet{CellIndex}()
-                sizehint!(refinement_set, length(grid.kopp_cells))
-                sizehint!(coarsening_set, length(grid.kopp_cells))
-                coarsening_vector = zeros(Int, length(grid.kopp_cells))
-                @info extrema(error_vector)
-                @inbounds for cc in CellIterator(grid, 1:length(grid.kopp_cells))
-                    grid.kopp_cells[cellid(cc)].isleaf || continue
-                    if sqrt(error_vector[cellid(cc)]) > threshold
-                        get_refinement_level(grid.kopp_cells[cellid(cc)]) >= 1 && continue
-                        push!(refinement_set, CellIndex(cellid(cc)))
+            @time "refinement loop" begin
+                while needs_refinement == true
+                    needs_refinement = false
+                    refinement_set = OrderedSet{CellIndex}()
+                    coarsening_set = OrderedSet{CellIndex}()
+                    sizehint!(refinement_set, length(grid.kopp_cells))
+                    sizehint!(coarsening_set, length(grid.kopp_cells))
+                    coarsening_vector = zeros(Int, length(grid.kopp_cells))
+                    @info extrema(error_vector)
+                    @inbounds for cc in CellIterator(grid, 1:length(grid.kopp_cells))
+                        grid.kopp_cells[cellid(cc)].isleaf || continue
+                        if sqrt(error_vector[cellid(cc)]) > threshold
+                            get_refinement_level(grid.kopp_cells[cellid(cc)]) >= 1 && continue
+                            push!(refinement_set, CellIndex(cellid(cc)))
+                            needs_refinement = true
+                        end
+                    end
+                    isempty(refinement_set) || refine!(grid, topology, refinement_cache, sync, refinement_set)
+                    coarsening_vector = zeros(Int, length(grid.kopp_cells))
+                    for cc in CellIterator(grid, 1:length(grid.kopp_cells))
+                        grid.kopp_cells[cellid(cc)].isleaf || continue
+                        if threshold/10 > sqrt(error_vector[cellid(cc)])
+                            parent = grid.kopp_cells[cellid(cc)].parent
+                            parent <= 0 && continue
+                            coarsening_vector[parent] += 1
+                        end
+                    end
+                    for cc in CellIterator(grid, 1:length(grid.kopp_cells))
+                        grid.kopp_cells[cellid(cc)].isleaf && continue
+                        coarsening_vector[cellid(cc)] <4 && continue
+                        push!(coarsening_set, CellIndex(cellid(cc)))
                         needs_refinement = true
                     end
+                    isempty(coarsening_set) || coarsen!(grid, topology, refinement_cache, sync, coarsening_set)
+                    refinement_iteration += 1
+                    refinement_iteration == 1 && break
+                    @warn refinement_iteration
                 end
-                refine!(grid, topology, refinement_cache, sync, refinement_set)
-                resize!(error_vector, length(grid.kopp_cells))
-                error_vector .= 0.0
-                for ic in InterfaceIterator(grid, topology)
-                    cell_a = cellid(ic.a)
-                    cell_b = cellid(ic.b)
-                    # TODO: urgent why reinit allocates
-                    reinit!(interfacevalues, ic, topology)
-                    celldofs!(( dofs_temp_storage2[1:ndofs_cell]), dh, cell_a)
-                    celldofs!(( dofs_temp_storage2[ndofs_cell + 1:end]), dh, cell_b)
-
-                    estimate_kelly_interface!(Float64, error_vector, u[dofs_temp_storage2], ic, sync.values_cache.interface_values)
-                end
-                coarsening_vector = zeros(Int, length(grid.kopp_cells))
-                for cc in CellIterator(grid, 1:length(grid.kopp_cells))
-                    grid.kopp_cells[cellid(cc)].isleaf || continue
-                    if threshold/10 > sqrt(error_vector[cellid(cc)])
-                        parent = grid.kopp_cells[cellid(cc)].parent
-                        parent <= 0 && continue
-                        coarsening_vector[parent] += 1
-                    end
-                end
-                for cc in CellIterator(grid, 1:length(grid.kopp_cells))
-                    grid.kopp_cells[cellid(cc)].isleaf && continue
-                    coarsening_vector[cellid(cc)] <4 && continue
-                    push!(coarsening_set, CellIndex(cellid(cc)))
-                    needs_refinement = true
-                end
-                coarsen!(grid, topology, refinement_cache, sync, coarsening_set)
-                refinement_iteration += 1
-                refinement_iteration == 1 && break
-                @warn refinement_iteration
             end
-            resize!(error_vector, length(grid.kopp_cells))
             resize!(u_new, length(u))
-            error_vector .= 0.0
-            for ic in InterfaceIterator(grid, topology)
-                cell_a = cellid(ic.a)
-                cell_b = cellid(ic.b)
-                reinit!(interfacevalues, ic, topology)
-                celldofs!(( dofs_temp_storage2[1:ndofs_cell]), dh, cell_a)
-                celldofs!(( dofs_temp_storage2[ndofs_cell + 1:end]), dh, cell_b)
-
-                estimate_kelly_interface!(Float64, error_vector, u[dofs_temp_storage2], ic, sync.values_cache.interface_values)
-            end
             if io_enabled
                 fgrid = to_ferrite_grid(grid)
                 dh2 = deepcopy(sync.dh)
