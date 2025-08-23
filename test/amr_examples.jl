@@ -177,27 +177,28 @@ begin
         # Δt = 0.0015
         # Δt = 0.0000001
         T = 100*Δt
-        T = 1.0
+        T = 5.0
         ndofs_cell = 4
         u = sync.data_stores.solution_vector.data
         u_new = copy(u)
+        u_prev = copy(u)
         error_vector = sync.data_stores.error_vector.data
         dofs_map = sync.data_stores.dofs_map
         dofs_temp_storage = zeros(Int, ndofs_cell)
         @views for t ∈ 0.0:Δt:T
             u_new .= 0.0
             # error_vector .= 0.0
-            dt = Dict{Int, Float64}()
-            @views for cc in CellIterator(grid)
-                grid.kopp_cells[cellid(cc)].isleaf || continue
-                offset_a = dofs_map.offsets[cellid(cc)]
-                end_idx = cellid(cc) == length(dofs_map.offsets) ? length(dofs_map.dofs) : dofs_map.offsets[cellid(cc) + 1] - 1
-                dofs_a = dofs_map.dofs[offset_a : end_idx]
-                K = sync.data_stores.assembled_stiffness_matrix.data[1:ndofs_cell, offset_a : end_idx]
-                Minv = inv((sync.data_stores.cell_mass_matrix.data[:,:,cellid(cc)]))
-                celldofs!(dofs_temp_storage, dh, cellid(cc))
-                dt[cellid(cc)] = (1 / maximum(svdvals(Minv * (-K))))
-            end
+            # dt = Dict{Int, Float64}()
+            # @views for cc in CellIterator(grid)
+            #     grid.kopp_cells[cellid(cc)].isleaf || continue
+            #     offset_a = dofs_map.offsets[cellid(cc)]
+            #     end_idx = cellid(cc) == length(dofs_map.offsets) ? length(dofs_map.dofs) : dofs_map.offsets[cellid(cc) + 1] - 1
+            #     dofs_a = dofs_map.dofs[offset_a : end_idx]
+            #     K = sync.data_stores.assembled_stiffness_matrix.data[1:ndofs_cell, offset_a : end_idx]
+            #     Minv = inv((sync.data_stores.cell_mass_matrix.data[:,:,cellid(cc)]))
+            #     celldofs!(dofs_temp_storage, dh, cellid(cc))
+            #     dt[cellid(cc)] = (1 / maximum(svdvals(Minv * (-K))))
+            # end
 
             @views for cc in CellIterator(grid)
                 grid.kopp_cells[cellid(cc)].isleaf || continue
@@ -207,10 +208,11 @@ begin
                 K = sync.data_stores.assembled_stiffness_matrix.data[1:ndofs_cell, offset_a : end_idx]
                 Minv = inv((sync.data_stores.cell_mass_matrix.data[:,:,cellid(cc)]))
                 celldofs!(dofs_temp_storage, dh, cellid(cc))
-                @show Δt (1 / maximum(svdvals(Minv * (-K))))
+                # @show Δt (1 / maximum(svdvals(Minv * (-K))))
                 u_new[dofs_temp_storage] .= u[dofs_temp_storage] + Δt * Minv * (-K*u[dofs_a])
             end
             u .= u_new
+            # u_prev .= u
             update!(sync.data_stores.error_vector, sync.data_stores_prev.error_vector, sync.data_stores.solution_vector, grid, topology, dh, refinement_cache, sync.values_cache, 4)
 
             Base.resize!(sync.data_stores_prev.error_vector.data, size(sync.data_stores.error_vector.data)...)
@@ -231,7 +233,7 @@ begin
             end
             needs_refinement = true
             refinement_iteration = 0
-            threshold = 0.2
+            threshold = 0.3
             @time "refinement loop" begin
                 while needs_refinement == true
                     needs_refinement = false
@@ -253,7 +255,7 @@ begin
                     coarsening_vector = zeros(Int, length(grid.kopp_cells))
                     for cc in CellIterator(grid, 1:length(grid.kopp_cells))
                         grid.kopp_cells[cellid(cc)].isleaf || continue
-                        if threshold/10 > sqrt(error_vector[cellid(cc)])
+                        if threshold/5 > sqrt(error_vector[cellid(cc)])
                             parent = grid.kopp_cells[cellid(cc)].parent
                             parent <= 0 && continue
                             coarsening_vector[parent] += 1

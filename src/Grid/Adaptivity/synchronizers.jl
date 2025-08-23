@@ -539,7 +539,7 @@ function assemble_element_matrix!(K::CellStiffnessMatrix, kopp_values::ValuesCac
     end
     return nothing
 end
-function assemble_element_matrix!(K::InterfaceStiffnessMatrix, kopp_values::ValuesCache, interface_index, μ::Float64=8.)
+function assemble_element_matrix!(K::InterfaceStiffnessMatrix, kopp_values::ValuesCache, interface_index, μ::Float64=5.)
     Ki = @view K.data[:, :, interface_index]
     iv = kopp_values.interface_values
     for q_point in 1:getnquadpoints(iv)
