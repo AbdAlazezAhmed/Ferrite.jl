@@ -5,7 +5,7 @@ using Logging
 using ForwardDiff
 import SHA
 using Random
-using LinearAlgebra:norm2
+using LinearAlgebra:norm2, svdvals
 using SparseArrays
 using StaticArrays
 using OrderedCollections
@@ -78,6 +78,7 @@ begin
     # Ferrite.apply_analytical!(u, dh, :u, x -> 1/((100000*x[1])^2 + 0.1) + sin(x[2]^3) - 1 )
     # Ferrite.apply_analytical!(u, dh, :u, x -> 1 - (x[1]^2 + x[2]^2)/200)
     Ferrite.apply_analytical!(u, dh, :u, x -> spiral_field(x[1], x[2]) )
+    update!(sync.data_stores.error_vector, sync.data_stores_prev.error_vector, sync.data_stores.solution_vector, grid, topology, dh, refinement_cache, sync.values_cache, 4)
     # Ferrite.apply_analytical!(u, dh, :u, x -> x[1] > 0 && x[2] > 0 ? 10.0 : 0.0 )
     # Ferrite.apply_analytical!(sync.data_stores_prev[4].data, dh, :u, x -> spiral_field(x[1], x[2]) )
     # Ferrite.apply_analytical!(sync.data_stores_prev[4].data, dh, :u, x -> 1/((100000*x[1])^2 + 0.1) + sin(x[2]^3) - 1 )
@@ -173,6 +174,7 @@ begin
         # Δt = 0.00013019726292697877
         Δt = 0.00025
         Δt = 0.0025
+        # Δt = 0.0015
         # Δt = 0.0000001
         T = 100*Δt
         T = 1.0
@@ -185,7 +187,17 @@ begin
         @views for t ∈ 0.0:Δt:T
             u_new .= 0.0
             # error_vector .= 0.0
-            @show (extrema(u))
+            dt = Dict{Int, Float64}()
+            @views for cc in CellIterator(grid)
+                grid.kopp_cells[cellid(cc)].isleaf || continue
+                offset_a = dofs_map.offsets[cellid(cc)]
+                end_idx = cellid(cc) == length(dofs_map.offsets) ? length(dofs_map.dofs) : dofs_map.offsets[cellid(cc) + 1] - 1
+                dofs_a = dofs_map.dofs[offset_a : end_idx]
+                K = sync.data_stores.assembled_stiffness_matrix.data[1:ndofs_cell, offset_a : end_idx]
+                Minv = inv((sync.data_stores.cell_mass_matrix.data[:,:,cellid(cc)]))
+                celldofs!(dofs_temp_storage, dh, cellid(cc))
+                dt[cellid(cc)] = (1 / maximum(svdvals(Minv * (-K))))
+            end
 
             @views for cc in CellIterator(grid)
                 grid.kopp_cells[cellid(cc)].isleaf || continue
@@ -195,10 +207,14 @@ begin
                 K = sync.data_stores.assembled_stiffness_matrix.data[1:ndofs_cell, offset_a : end_idx]
                 Minv = inv((sync.data_stores.cell_mass_matrix.data[:,:,cellid(cc)]))
                 celldofs!(dofs_temp_storage, dh, cellid(cc))
+                @show Δt (1 / maximum(svdvals(Minv * (-K))))
                 u_new[dofs_temp_storage] .= u[dofs_temp_storage] + Δt * Minv * (-K*u[dofs_a])
             end
-            @show (extrema(u_new))
             u .= u_new
+            update!(sync.data_stores.error_vector, sync.data_stores_prev.error_vector, sync.data_stores.solution_vector, grid, topology, dh, refinement_cache, sync.values_cache, 4)
+
+            Base.resize!(sync.data_stores_prev.error_vector.data, size(sync.data_stores.error_vector.data)...)
+            sync.data_stores_prev.error_vector.data .= sync.data_stores.error_vector.data
             if norm(u) > 1e3
                 @show "Broken at $t"
                 fgrid = to_ferrite_grid(grid)
@@ -320,6 +336,6 @@ begin
         io_enabled &&     vtk_save(pvd);
 
     end
-    @time solve_direct(grid, topology, dh, refinement_cache, sync, 0.0001, false)
+    @time solve_direct(grid, topology, dh, refinement_cache, sync, 0.0001, true)
 
 end

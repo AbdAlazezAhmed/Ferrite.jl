@@ -43,31 +43,37 @@ function Base.resize!(data_store::ErrorVector, data_store_prev::ErrorVector, nce
     data_store.data .= zero(eltype(data_store.data))
 end
 
-function update!(data_store::ErrorVector, data_store_prev::ErrorVector, u, grid, topology, dh, refinement_cache, values_cache, ndofs_cell)
+function update!(data_store::ErrorVector, data_store_prev::ErrorVector, u, grid::KoppGrid{Dim}, topology, dh, refinement_cache, values_cache, ndofs_cell) where Dim
     dofs_temp_storage2 = zeros(Int, 2*ndofs_cell)
-    data_store.data .= 0.0
+    data_store.data .= zero(eltype(data_store.data))
     # @views @inbounds for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
     #     new == 0 && continue
     #     (refinement_cache.marked_for_refinement[new] ||
     #     refinement_cache.marked_for_coarsening[new] ) && continue
+    #     recalculate_flag = false
+    #     for facet in 1:2*Dim
+    #         neighborhood = getneighborhood(topology, FacetIndex(new, facet))
+    #         for neighbor in neighborhood
+    #             cell_b = neighbor[1]
+    #             if (refinement_cache.marked_for_refinement[cell_b] ||
+    #                 refinement_cache.marked_for_coarsening[cell_b] )
+    #                 recalculate_flag = true
+    #                 break
+    #             end
+    #         end
+    #         if recalculate_flag
+    #             break
+    #         end
+    #     end
+    #     recalculate_flag && continue
     #     data_store.data[new] = data_store_prev.data[old]
     # end
     @inbounds @views for ic in InterfaceIterator(grid, topology)
         cell_a = cellid(ic.a)
         cell_b = cellid(ic.b)
-        # if (refinement_cache.marked_for_refinement[cell_a] ||
-        # refinement_cache.marked_for_refinement[cell_b] ||
-        # refinement_cache.marked_for_coarsening[cell_a] ||
-        # refinement_cache.marked_for_coarsening[cell_b] )
-            # data_store.data[cell_a] = zero(eltype(data_store.data))
-            # data_store.data[cell_b] = zero(eltype(data_store.data))
-        # else
-        #     continue
-        # end
         reinit!(values_cache.interface_values, ic, topology)
         celldofs!(( dofs_temp_storage2[1:ndofs_cell]), dh, cell_a)
         celldofs!(( dofs_temp_storage2[ndofs_cell + 1:end]), dh, cell_b)
-
         estimate_kelly_interface!(Float64, data_store.data, u.data[dofs_temp_storage2], ic, values_cache.interface_values)
     end
 end
