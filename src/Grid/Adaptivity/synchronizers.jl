@@ -272,7 +272,7 @@ function Base.resize!(data_store::TimeVector, data_store_prev::TimeVector, ncell
     Base.resize!(data_store_prev.data, length(data_store.data))
     data_store_prev.data .= data_store.data
     Base.resize!(data_store.data, ncells)
-    # data_store.data .= zero(eltype(data_store.data))
+    data_store.data .= zero(eltype(data_store.data))
 end
 
 function Base.resize!(data_store::AMRdofwiseVector, data_store_prev::AMRdofwiseVector, ncells, ninterfaces, ndofs)
@@ -390,7 +390,7 @@ function update!(data_store::AMRInterfaceData{<:ElasticArray}, data_store_prev::
         data = @view data_store.data[:, :, interface_index]
         if all(iszero, data)
             reinit!(values_cache.interface_values, interface_cache, topology)
-            assemble_element_matrix!(data_store, values_cache, interface_index)
+            assemble_element_matrix!(data_store, values_cache, interface_index, 8/compute_h(interface_cache))
         end
         interface_index += 1
     end
@@ -417,7 +417,7 @@ function sync_amr_refinement_forward!(grid::KoppGrid, sync::LTSAMRSynchronizer{O
     resize!(sync.dh.cell_dofs_offset, new_length)
     resize!(sync.dh.cell_to_subdofhandler, new_length)
 
-    update_dofs!(grid, refinement_cache, sync.dh, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev, Val(Order))
+    update_dofs_H1!(grid, refinement_cache, sync.dh, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev, Val(Order))
     Base.resize!(sync.data_stores.dofs_map,                             sync.data_stores_prev.dofs_map, new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) + n_refined_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.assembled_stiffness_matrix,           sync.data_stores_prev.assembled_stiffness_matrix, new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) + n_refined_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.solution_vector,                      sync.data_stores_prev.solution_vector, new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) + n_refined_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
@@ -453,7 +453,7 @@ function sync_amr_coarsening_forward!(grid::KoppGrid, sync::LTSAMRSynchronizer{O
     resize!(sync.dh.cell_dofs_offset, new_length)
     resize!(sync.dh.cell_to_subdofhandler, new_length)
 
-    update_dofs!(grid, refinement_cache, sync.dh, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev, Val(Order))
+    update_dofs_H1!(grid, refinement_cache, sync.dh, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev, Val(Order))
 
     sync.interface_matrix_index .= 0
 end
@@ -533,7 +533,7 @@ function assemble_element_matrix!(K::CellStiffnessMatrix, kopp_values::ValuesCac
             for j in 1:n_basefuncs
                 ∇u = shape_gradient(cv, q_point, j)
                 ## Add contribution to Ke
-                Ke[i, j] += (∇δu ⋅ ∇u) * dΩ
+                Ke[i, j] += 0.01 * (∇δu ⋅ ∇u) * dΩ
             end
         end
     end
@@ -541,6 +541,7 @@ function assemble_element_matrix!(K::CellStiffnessMatrix, kopp_values::ValuesCac
 end
 function assemble_element_matrix!(K::InterfaceStiffnessMatrix, kopp_values::ValuesCache, interface_index, μ::Float64=5.)
     Ki = @view K.data[:, :, interface_index]
+    Ki .= 0.0
     iv = kopp_values.interface_values
     for q_point in 1:getnquadpoints(iv)
         # Get the normal to facet A
@@ -558,7 +559,7 @@ function assemble_element_matrix!(K::InterfaceStiffnessMatrix, kopp_values::Valu
                 u_jump = shape_value_jump(iv, q_point, j) * (-normal)
                 ∇u_avg = shape_gradient_average(iv, q_point, j)
                 # Add contribution to Ki
-                Ki[i, j] += -(δu_jump ⋅ ∇u_avg + ∇δu_avg ⋅ u_jump) * dΓ + μ * (δu_jump ⋅ u_jump) * dΓ
+                Ki[i, j] += 0.01 * (-(δu_jump ⋅ ∇u_avg + ∇δu_avg ⋅ u_jump) * dΓ + μ * (δu_jump ⋅ u_jump) * dΓ)
             end
         end
     end
@@ -588,7 +589,7 @@ function LTSAMRSynchronizer(grid::KoppGrid, dh::Ferrite.AbstractDofHandler, kopp
     interface_index = 1
     for interface_cache in Ferrite.InterfaceIterator(grid, topology)
         reinit!(kopp_values.interface_values, interface_cache, topology)
-        assemble_element_matrix!(K_interface_matrices, kopp_values, interface_index)
+        assemble_element_matrix!(K_interface_matrices, kopp_values, interface_index, 8/compute_h(interface_cache))
         interface_index += 1
     end
     ninterfaces = interface_index - 1

@@ -27,7 +27,7 @@ begin
     # )))
 
     refshape = RefQuadrilateral
-    grid = generate_grid(KoppCell{2,Int}, (40, 40), Ferrite.Vec((-10.0, -10.0)), Ferrite.Vec((10.0, 10.0)))
+    grid = generate_grid(KoppCell{2,Int}, (10, 10), Ferrite.Vec((-1.0, -1.0)), Ferrite.Vec((1.0, 1.0)))
     # grid = generate_grid(KoppCell{2, Int}, (40,40), Ferrite.Vec((-20.0,0.0)), Ferrite.Vec((20.0,40.25)))
     # grid = generate_grid(KoppCell{2, Int}, (3,3), Ferrite.Vec((-1.0,0.0)), Ferrite.Vec((1.0,1.25)))
     # transform_coordinates!(grid.base_grid, x->Ferrite.Vec(
@@ -57,27 +57,15 @@ begin
     )
 
     refinement_cache = KoppRefinementCache(grid, topology)
-    function spiral_field(x, y; center=(0., 0.), turns=3.0 / 40, clockwise=false)
-        # Calculate offset from center
-        dx = x - center[1]
-        dy = y - center[2]
-
-        # Convert to polar coordinates
-        r = hypot(dx, dy)  # √(dx² + dy²)
-        θ = atan(dy, dx)   # Angle in [-π, π]
-
-        # Calculate spiral phase (adjust direction)
-        phase_sign = clockwise ? 1 : -1
-        spiral_phase = θ + phase_sign * 2√2 * turns * π * r
-
-        return sin(spiral_phase) > 0 ? 1. : 0.
+    function analytical_solution(x, y, t; D=0.01, a=50)
+        denominator = 1 + 4*a*D*t
+        return exp(-a*(x^2 + y^2)/denominator) / denominator
     end
-
     sync = LTSAMRSynchronizer(grid, dh, lts_values, refinement_cache, topology, 0.1)
     u = sync.data_stores.solution_vector.data
     # Ferrite.apply_analytical!(u, dh, :u, x -> 1/((100000*x[1])^2 + 0.1) + sin(x[2]^3) - 1 )
     # Ferrite.apply_analytical!(u, dh, :u, x -> 1 - (x[1]^2 + x[2]^2)/200)
-    Ferrite.apply_analytical!(u, dh, :u, x -> spiral_field(x[1], x[2]))
+    Ferrite.apply_analytical!(u, dh, :u, x -> analytical_solution(x[1], x[2], 0.0))
     # Ferrite.apply_analytical!(u, dh, :u, x -> x[1] > 0 && x[2] > 0 ? 10.0 : 0.0 )
     # Ferrite.apply_analytical!(sync.data_stores_prev[4].data, dh, :u, x -> spiral_field(x[1], x[2]) )
     update!(sync.data_stores.error_vector, sync.data_stores_prev.error_vector, sync.data_stores.solution_vector, grid, topology, dh, refinement_cache, sync.values_cache, 4)
@@ -166,7 +154,7 @@ begin
         @show "Done."
     end
     function solve_direct(grid::KoppGrid{Dim}, topology, dh, refinement_cache, sync, dt, io_enabled::Bool=false) where Dim
-        pvd = io_enabled ? paraview_collection("heat-spiral") : nothing
+        pvd = io_enabled ? paraview_collection("heat-benchmark-1-lts") : nothing
 
 
         # u   .= 100*rand(ndofs(dh))
@@ -275,7 +263,7 @@ begin
             end
             needs_refinement = true
             refinement_iteration = 0
-            threshold = 0.2
+            threshold = 0.1
             @time "refinement loop" begin
                 # while needs_refinement == true
                 needs_refinement = false
@@ -288,7 +276,7 @@ begin
                 @inbounds for cc in CellIterator(grid, 1:length(grid.kopp_cells))
                     grid.kopp_cells[cellid(cc)].isleaf || continue
                     if sqrt(error_vector[cellid(cc)]) > threshold
-                        get_refinement_level(grid.kopp_cells[cellid(cc)]) >= 2 && continue
+                        get_refinement_level(grid.kopp_cells[cellid(cc)]) >= 4 && continue
                         push!(refinement_set, CellIndex(cellid(cc)))
                         needs_refinement = true
                     end
@@ -324,7 +312,7 @@ begin
                 resize!(dh2.grid.nodes, length(fgrid.nodes))
                 dh2.grid.nodes .= fgrid.nodes
 
-                VTKGridFile("heat-spiral/heat-$T.vtu", fgrid; write_discontinuous=true) do vtk
+                VTKGridFile("heat-benchmark-1-lts/heat-$T.vtu", fgrid; write_discontinuous=true) do vtk
                     write_solution(vtk, dh2, u, "_")
                     write_cell_data(vtk, error_vector, "__")
                     pvd[T] = vtk

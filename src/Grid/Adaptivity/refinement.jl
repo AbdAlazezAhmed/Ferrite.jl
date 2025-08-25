@@ -303,7 +303,7 @@ function get_ref_inherited_dofs!(children_dofs, parent_dofs, ::Val{Dim}, ::Val{O
     return nothing
 end
 
-function update_dofs!(
+function update_dofs_H1!(
     grid::KoppGrid{Dim},
     refinement_cache::KoppRefinementCache,
     dh::DofHandler,
@@ -383,5 +383,158 @@ function update_dofs!(
         end
 
     end
+
+end
+
+
+function update_dofs_L2!(
+    grid::KoppGrid{Dim},
+    refinement_cache::KoppRefinementCache,
+    dh::DofHandler,
+    temp_celldofs::Vector{Int},
+    temp_cell_dofs_offset::Vector{Int},
+    temp_cell_to_subdofhandler::Vector{Int},
+    ::Val{Order}) where {Dim, Order}
+    dh.cell_dofs_offset .= 0
+    # dh.cell_dofs .= 1
+    @inbounds for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+        # copy old dofhander vectors
+        new == 0 && continue
+        dh.cell_dofs_offset[new] = temp_cell_dofs_offset[old]
+    end
+    refined = 0
+    coarsened = 0
+    @inbounds @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+        # copy old dofhander vectors
+        new == 0 && continue
+        ndofs_per_cell = dh.subdofhandlers[temp_cell_to_subdofhandler[old]].ndofs_per_cell
+        dh.cell_dofs_offset[new] += (2^Dim) * ndofs_per_cell * refined
+        dh.cell_dofs_offset[new] -= (2^Dim) * ndofs_per_cell * coarsened
+        if refinement_cache.marked_for_refinement[new]
+            # for i in new + 1 : length(dh.cell_dofs_offset)
+                # dh.cell_dofs_offset[i] += (2^Dim) * ndofs_per_cell
+            # end
+            refined += 1
+        end
+        if refinement_cache.marked_for_coarsening[new]
+            coarsened += 1
+        end
+        dh.cell_dofs[dh.cell_dofs_offset[new] : dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1] .= temp_celldofs[temp_cell_dofs_offset[old] : temp_cell_dofs_offset[old] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+        dh.cell_to_subdofhandler[new] = temp_cell_to_subdofhandler[old]
+    end
+
+    @views for (old, cell_idx) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+        cell_idx == 0 && continue
+        # ASSUMPTION: single field
+        if refinement_cache.marked_for_refinement[cell_idx]
+            ndofs_per_cell = dh.subdofhandlers[dh.cell_to_subdofhandler[cell_idx]].ndofs_per_cell
+            @inbounds for new_seq in 1 : 2^Dim
+                child_idx = cell_idx + new_seq
+                # DofHandler add new dofs and offsets
+                # For DG only
+                dh.cell_dofs_offset[child_idx] = dh.cell_dofs_offset[cell_idx] + new_seq * ndofs_per_cell
+                dh.cell_to_subdofhandler[child_idx] = dh.cell_to_subdofhandler[cell_idx]
+                dh.ndofs += dh.subdofhandlers[1].ndofs_per_cell
+            end
+            # children_dofs = dh.cell_dofs[dh.cell_dofs_offset[cell_idx+1] : dh.cell_dofs_offset[cell_idx+1] + (2^Dim) * ndofs_per_cell - 1]
+            # parent_dofs = dh.cell_dofs[dh.cell_dofs_offset[cell_idx] : dh.cell_dofs_offset[cell_idx + 1] - 1]
+
+            # get_ref_inherited_dofs!(children_dofs, parent_dofs, Val(Dim), Val(Order))
+        elseif refinement_cache.marked_for_coarsening[cell_idx]
+        end
+
+    end
+
+    max_dof = 0
+    current_dof = 1
+    dh.cell_dofs .= 0
+    # TODO: URGENT HARDCODED
+    ip = Lagrange{RefQuadrilateral, 1}()
+    @views for cc in CellIterator(grid)
+        cell_idx = cellid(cc)
+        cell = grid.kopp_cells[cell_idx]
+        cell.isleaf || continue
+        facet_dofs_idx = Ferrite.facetdof_indices(ip)
+        cell_dofs = dh.cell_dofs[dh.cell_dofs_offset[cell_idx] : dh.cell_dofs_offset[cell_idx] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+
+        for facet in 1:2*Dim
+            neighborhood = getneighborhood(topology, FacetIndex(cell_idx, facet))
+            length(neighborhood) > 1 && continue
+            for (i, dof_idx) in enumerate(facet_dofs_idx[facet])
+                if iszero(cell_dofs[dof_idx])
+                    cell_dofs[dof_idx] = current_dof
+                    if length(neighborhood) == 1
+                        neighbor = neighborhood[]
+                        # neighbor[1] < cell_idx && continue
+                        get_refinement_level(grid.kopp_cells[neighbor[1]]) < get_refinement_level(cell) && continue
+                        neighbor_dofs = dh.cell_dofs[dh.cell_dofs_offset[neighbor[1]] : dh.cell_dofs_offset[neighbor[1]] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+                        #TODO URGENT 3D take care of the transformation
+                        neighbor_facet_dofs = facet_dofs_idx[neighbor[2]]
+                        iszero(neighbor_dofs[neighbor_facet_dofs[end - i + 1]]) || continue
+                        neighbor_dofs[neighbor_facet_dofs[end - i + 1]] = current_dof
+                    end
+                    current_dof += 1
+                else
+                    if length(neighborhood) == 1
+                        neighbor = neighborhood[]
+                        neighbor[1] < cell_idx && continue
+                        get_refinement_level(grid.kopp_cells[neighbor[1]]) < get_refinement_level(cell) && continue
+                        neighbor_dofs = dh.cell_dofs[dh.cell_dofs_offset[neighbor[1]] : dh.cell_dofs_offset[neighbor[1]] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+                        #TODO URGENT 3D take care of the transformation
+                        neighbor_facet_dofs = facet_dofs_idx[neighbor[2]]
+                        neighbor_dofs[neighbor_facet_dofs[end - i + 1]] = current_dof
+                    end
+                end
+            end
+        end
+        parent_cell_idx = cell.parent
+        for i in 1:get_refinement_level(cell)
+            parent = grid.kopp_cells[parent_cell_idx]
+            cell_seq = (cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * ( i -1)))) >>  ((Dim + 1) * (i -1))
+            parent_dofs = dh.cell_dofs[dh.cell_dofs_offset[parent_cell_idx] : dh.cell_dofs_offset[parent_cell_idx] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+            iszero(parent_dofs[cell_seq]) && (parent_dofs[cell_seq] = cell_dofs[cell_seq])
+            for facet in 1:2*Dim
+                neighborhood = getneighborhood(topology, FacetIndex(parent_cell_idx, facet))
+                length(neighborhood) > 1 && continue
+                for (i, dof_idx) in enumerate(facet_dofs_idx[facet])
+                    dof_idx != cell_seq && continue
+                    if length(neighborhood) == 1
+                        neighbor = neighborhood[]
+                        get_refinement_level(grid.kopp_cells[neighbor[1]]) < get_refinement_level(parent) && continue
+                        neighbor_dofs = dh.cell_dofs[dh.cell_dofs_offset[neighbor[1]] : dh.cell_dofs_offset[neighbor[1]] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+                        #TODO URGENT 3D take care of the transformation
+                        neighbor_facet_dofs = facet_dofs_idx[neighbor[2]]
+                        iszero(neighbor_dofs[neighbor_facet_dofs[end - i + 1]]) && (neighbor_dofs[neighbor_facet_dofs[end - i + 1]] = current_dof)
+                    end
+                end
+            end
+            parent_seq = (cell.sequence & (((1 << (Dim + 1)) - 1) << ((Dim + 1) * ( i+1 -1)))) >>  ((Dim + 1) * (i+1 -1))
+            (parent_seq != 0 || parent_seq != cell_seq) && break
+            parent_cell_idx = parent.parent
+        end
+    end
+    # @inbounds @views for (old, new) in enumerate(refinement_cache.old_cell_to_new_cell_map)
+    #     new == 0 && continue
+    #     # copy old dofhander vectors
+    #     ndofs_per_cell = dh.subdofhandlers[temp_cell_to_subdofhandler[old]].ndofs_per_cell
+    #     if refinement_cache.marked_for_refinement[new]
+    #         cell_dofs_current_cell = dh.cell_dofs[dh.cell_dofs_offset[new] :  dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+    #         max_dof = maximum(cell_dofs_current_cell)
+    #         for i in dh.cell_dofs_offset[new] + (2^Dim + 1) * ndofs_per_cell : length(dh.cell_dofs)
+    #             dh.cell_dofs[i] > max_dof || continue
+    #             dh.cell_dofs[i] += (2^Dim - 1) * ndofs_per_cell
+    #         end
+    #     end
+    #     if refinement_cache.marked_for_coarsening[new]
+    #         cell_dofs_current_cell = dh.cell_dofs[dh.cell_dofs_offset[new] :  dh.cell_dofs_offset[new] + dh.subdofhandlers[1].ndofs_per_cell - 1]
+    #         max_dof = maximum(cell_dofs_current_cell)
+    #         for i in dh.cell_dofs_offset[new] : length(dh.cell_dofs)
+    #             dh.cell_dofs[i] > max_dof || continue
+    #             dh.cell_dofs[i] -= (2^Dim - 1) * ndofs_per_cell
+    #         end
+    #     end
+    # end
+
+
 
 end
