@@ -146,6 +146,44 @@ getdistance(p1::Vec{N, T},p2::Vec{N, T}) where {N, T} = norm(p1-p2);
 #TODO: why this allocates?
 getdiameter(cell_coords::AbstractVector{Vec{N, T}}) where {N, T} = maximum(x->(maximum(y->getdistance(y, x), cell_coords; init=0.0)), cell_coords; init=0.0);
 
+compute_h(cc::Ferrite.CellCache{<:Any,<:Ferrite.AbstractGrid{1}}) = abs(cc.coords[1][1] - cc.coords[2][1])
+compute_h(cc::Ferrite.CellCache{<:Any,<:Ferrite.AbstractGrid{2}}) = min(norm(cc.coords[1] - cc.coords[2]), norm(cc.coords[2] - cc.coords[3]), norm(cc.coords[1] - cc.coords[3]))
+compute_h(cc::Ferrite.CellCache{<:Any,<:Ferrite.AbstractGrid{3}}) = min(
+    norm(cc.coords[1] - cc.coords[2]),
+    norm(cc.coords[1] - cc.coords[3]),
+    norm(cc.coords[1] - cc.coords[4]),
+    norm(cc.coords[2] - cc.coords[3]),
+    norm(cc.coords[2] - cc.coords[4]),
+    norm(cc.coords[3] - cc.coords[4]))
+compute_h(ic::Ferrite.InterfaceCache) = min(compute_h(ic.a.cc), compute_h(ic.b.cc))
+function check_and_compute_convergence_norms(grid, dh, u, cellvalues, t)
+    L2norm = 0.0
+    ∇L2norm = 0.0
+    L∞norm = 0.0
+    for cell in CellIterator(grid)
+        grid.kopp_cells[cellid(cell)].isleaf || continue
+        reinit!(cellvalues, cell)
+        n_basefuncs = getnbasefunctions(cellvalues)
+        coords = getcoordinates(cell)
+        uₑ = u[celldofs(dh, cellid(cell))]
+        for q_point in 1:getnquadpoints(cellvalues)
+            dΩ = getdetJdV(cellvalues, q_point)
+            x = spatial_coordinate(cellvalues, q_point, coords)
+            uₐₙₐ    = analytical_solution(x[1], x[2], t)
+            uₐₚₚᵣₒₓ = function_value(cellvalues, q_point, uₑ)
+            L∞norm = max(L∞norm, norm(uₐₙₐ-uₐₚₚᵣₒₓ))
+            L2norm  += norm(uₐₙₐ-uₐₚₚᵣₒₓ)^2*dΩ
+
+            ∇uₐₙₐ    = gradient(x-> analytical_solution(x[1], x[2], t), x)
+            ∇uₐₚₚᵣₒₓ = function_gradient(cellvalues, q_point, uₑ)
+            ∇L2norm += norm(∇uₐₙₐ-∇uₐₚₚᵣₒₓ)^2*dΩ
+
+            # Pointwise convergence
+        end
+    end
+    √(L2norm), √(∇L2norm), L∞norm
+end
+
 Base.@propagate_inbounds function estimate_kelly_interface!(T::Type{<:AbstractFloat}, err::AbstractVector, u::AbstractVector, interface_cache::InterfaceCache, interfacevalues, #=interface_diffusion_cache::BilinearDiffusionInterfaceCache=#)
     error::T = 0.0
     facet_a = interface_cache.a.current_facet_id

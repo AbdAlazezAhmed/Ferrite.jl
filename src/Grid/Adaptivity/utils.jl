@@ -15,13 +15,13 @@ function _calc_interfaces_dict_prev(
     grid::KoppGrid{Dim},
     topology::KoppTopology) where {Dim}
     NFacets = 2 * Dim
-    interfaces_dict_prev = Dict{FacetIndex, Int}()
-    interfaces_dict_prev_vec = Vector{Pair{FacetIndex, Int}}(undef, length(topology.neighbors)÷2)
+    interfaces_dict_prev = Dict{Tuple{FacetIndex, FacetIndex}, Int}()
+    interfaces_dict_prev_vec = Vector{Pair{Tuple{FacetIndex, FacetIndex}, Int}}(undef, length(topology.neighbors)÷2)
     # sizehint!(interfaces_dict_prev, length(topology.neighbors)÷2)
     i = 1
     # @time "iter" begin
         for ic in Ferrite.InterfaceIterator(grid, topology)
-            interfaces_dict_prev_vec[i] = FacetIndex(Ferrite.cellid(ic.a), ic.a.current_facet_id) => i
+            interfaces_dict_prev_vec[i] = (FacetIndex(Ferrite.cellid(ic.a), ic.a.current_facet_id), FacetIndex(Ferrite.cellid(ic.b), ic.b.current_facet_id)) => i
             i += 1
         end
     # end
@@ -35,14 +35,19 @@ function _calc_interfaces_map(grid::KoppGrid{Dim},
     dict_prev::Dict) where {Dim}
     interface_index = 1
     ii = Ferrite.InterfaceIterator(grid, topology)
+    refinement_cache.interfaces_data_updated_indices .= 0
     for ic in ii
-        (refinement_cache.marked_for_refinement[Ferrite.cellid(ic.a)] ||
-        refinement_cache.marked_for_refinement[Ferrite.cellid(ic.b)] ||
+        p1 = abs(grid.kopp_cells[Ferrite.cellid(ic.a)].parent)
+        p2 = abs(grid.kopp_cells[Ferrite.cellid(ic.b)].parent)
+        (refinement_cache.marked_for_refinement[p1] ||
+        refinement_cache.marked_for_refinement[p2] ||
         refinement_cache.marked_for_coarsening[Ferrite.cellid(ic.a)] ||
-        refinement_cache.marked_for_coarsening[Ferrite.cellid(ic.b)] ) && continue
+        refinement_cache.marked_for_coarsening[Ferrite.cellid(ic.b)] ) && (interface_index += 1; continue)
         cell_idx = refinement_cache.new_cell_to_old_cell_map[Ferrite.cellid(ic.a)]
+        neighbor_idx = refinement_cache.new_cell_to_old_cell_map[Ferrite.cellid(ic.b)]
         iszero(cell_idx) && (interface_index += 1; continue)
-        old_index = dict_prev[FacetIndex(cell_idx, ic.a.current_facet_id)]
+        iszero(neighbor_idx) && (interface_index += 1; continue)
+        old_index = dict_prev[(FacetIndex(cell_idx, ic.a.current_facet_id), FacetIndex(neighbor_idx, ic.b.current_facet_id))]
         (old_index<=0) && (interface_index += 1; continue)
         refinement_cache.interfaces_data_updated_indices[old_index] = interface_index
         interface_index += 1
@@ -266,11 +271,13 @@ function _transform_to_parent!(coords::AbstractVector, node_coords, seq::T) wher
     nbits::T = Dim + 1
     mask = (1 << nbits) - 1 # Does this need to be T too?
     maximum_level::T = sizeof(T)*8 ÷ nbits # Maybe use ÷ ?
-    # coord_new = MVector{length(coords), eltype(coords)}(coords)
-    for level::T in maximum_level:0 # There should be an easier way
-        local_seq = seq & (mask << (nbits * level))
+    coord_new = MVector{length(node_coords), eltype(node_coords)}(node_coords)
+    coord_new .= node_coords
+    for level::T in maximum_level:-1:0 # There should be an easier way
+        local_seq = (seq & (mask << (nbits * level))) >> (nbits * level)
         local_seq == 0 && continue
-        map!(node -> ((node + node_coords[local_seq])/2), coords, coords)
+        map!(node -> ((node + coord_new[local_seq])/2), coords, coords)
+        coord_new .= Vec{2, Float64}.(getproperty.(_process_seq(ntuple(i -> Node(coord_new[i]), length(coord_new)), local_seq), :x))
     end
     return nothing
 end

@@ -239,6 +239,17 @@ struct LTSAMRSynchronizerDataStorage{CMM, CSM, ISM, ASM, DM, SV, TV, EV}
     error_vector::EV
 end
 
+struct LTSAMRSynchronizerDataStorage{CMM, CSM, ISM, ASM, DM, SV, TV, EV}
+    cell_mass_matrix::CMM
+    cell_stiffness_matrix::CSM
+    interface_stiffness_matrix::ISM
+    assembled_stiffness_matrix::ASM
+    dofs_map::DM
+    solution_vector::SV
+    time_vector::TV
+    error_vector::EV
+end
+
 struct LTSAMRSynchronizer{Order,DataStores<:LTSAMRSynchronizerDataStorage,VCT<:ValuesCache,DHT<:DofHandler} <: AbstractAMRSynchronizer
     # Values
     values_cache::VCT
@@ -372,8 +383,8 @@ function update!(data_store::AMRCellData{<:ElasticArray}, data_store_prev::AMRCe
             reinit!(values_cache.cell_values, cell_cache)
             assemble_element_matrix!(data_store, values_cache, cell_idx)
         else
-            new_data = @view data_store.data[:, :, cell_idx]
-            new_data .= @view data_store_prev.data[:, :, old]
+            # new_data = @view data_store.data[:, :, cell_idx]
+            # new_data .= @view data_store_prev.data[:, :, old]
         end
     end
 end

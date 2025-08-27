@@ -26,7 +26,7 @@ begin
 
     function solve_direct(grid::KoppGrid{Dim}, topology, dh, refinement_cache, sync, threshold, io_enabled::Bool=false) where Dim
         pvd = io_enabled ? paraview_collection("heat-benchmark-1-lts") : nothing
-        T_end = 5.0
+        T_end = 2.0
         ndofs_cell = 4
         u = sync.data_stores.solution_vector.data
         te = sync.data_stores.time_vector.data
@@ -284,20 +284,19 @@ begin
         end
 
 
-        @time error_for_analysis = solve_direct(grid, topology, dh, refinement_cache, sync, threshold, true)
+        @time error_for_analysis = solve_direct(grid, topology, dh, refinement_cache, sync, threshold, false)
         return error_for_analysis
     end
-    # using GLMakie
+    using GLMakie
     errors_viz = Float64[]
     thresholds = 0.01:0.001:0.1
-    thresholds = 0.05
     for threshold in thresholds
         t_error = 0.0
         error_for_analysis = time_once_threshod(threshold)
-        # dt = 0.1
-        # for (i, t) in enumerate(0.0:dt:2.0)
-        #     t_error += error_for_analysis[i][1] * dt
-        # end
-        # push!(errors_viz, t_error)
+        dt = 0.1
+        for (i, t) in enumerate(0.0:dt:2.0)
+            t_error += error_for_analysis[i][1] * dt
+        end
+        push!(errors_viz, t_error)
     end
 end

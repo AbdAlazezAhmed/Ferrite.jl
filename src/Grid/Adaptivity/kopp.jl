@@ -264,20 +264,27 @@ function Ferrite.getcoordinates!(coords, grid::KoppGrid{Dim}, i) where Dim
     return nothing
 end
 
-function to_ferrite_grid(grid::KoppGrid{2})
+function Ferrite.getcoordinates(grid::KoppGrid{Dim}, i) where Dim
+    return reinterpret(Vec{Dim, Float64},SVector(get_refined_coords(grid, i)))
+end
+
+function to_ferrite_grid(grid::KoppGrid{2}, include_parent::Bool = true)
     cells = Quadrilateral[]
     nodes = Node{2, Float64}[]
+    cellids = Int[]
     for cc in CellIterator(grid, OrderedSet(1:length(grid.kopp_cells)))
         push!(nodes, Node.(getcoordinates(cc))...)
     end
     unique!(nodes)
     for cc in CellIterator(grid, OrderedSet(1:length(grid.kopp_cells)))
+        include_parent || grid.kopp_cells[cellid(cc)].isleaf||continue
         idx1 = findfirst(x -> x == Node(getcoordinates(cc)[1]), nodes)
         idx2 = findfirst(x -> x == Node(getcoordinates(cc)[2]), nodes)
         idx3 = findfirst(x -> x == Node(getcoordinates(cc)[3]), nodes)
         idx4 = findfirst(x -> x == Node(getcoordinates(cc)[4]), nodes)
         push!(cells, Quadrilateral((idx1, idx2, idx3, idx4)))
+        push!(cellids, cellid(cc))
     end
 
-    return Ferrite.Grid(cells, nodes)
+    return Ferrite.Grid(cells, nodes), cellids
 end

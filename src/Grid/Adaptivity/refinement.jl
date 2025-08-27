@@ -45,6 +45,9 @@ function _update_refinement_cache_isactive!(
         end
         refinement_cache.new_cell_to_old_cell_map[refinement_cache.old_cell_to_new_cell_map[i]] = i
     end
+    # for (i, cell) in enumerate(grid.kopp_cells)
+    #     refinement_cache.new_cell_to_old_cell_map[refinement_cache.old_cell_to_new_cell_map[i]] = i
+    # end
     old_length = length(refinement_cache.interfaces_data_updated_indices)
     # resize!(refinement_cache.interfaces_data_updated_indices, old_length + n_refined_interfaces * ((2^(Dim-1) - 1)) + 2Dim * length(cellset))
     # refinement_cache.interfaces_data_updated_indices .= 0

@@ -34,9 +34,19 @@ function Ferrite.reinit!(
 
     quad_points_a = Ferrite.getpoints(iv.here.fqr, facet_here)
     quad_points_b = Ferrite.getpoints(iv.there.fqr, facet_there)
-    Ferrite.transform_interface_points!(quad_points_b, quad_points_a, interface_transformation)
-    seq_length = get_refinement_level(cell_there) - get_refinement_level(cell_here)
-    _transform_to_parent!(quad_points_b, (Ferrite.reference_coordinates(Lagrange{Ferrite.RefHypercube{dim},1}())), cell_there.sequence & ((1 << ((dim + 1) * seq_length)) - 1 ))
+
+    temp_a = copy(quad_points_a)
+    seq_length = get_refinement_level(cell_here) - get_refinement_level(cell_there)
+    facet_a = interface_transformation.facet_a
+    flipped = interface_transformation.flipped
+
+    for (idx, point) in pairs(temp_a)
+        face_point = Ferrite.element_to_facet_transformation(point, Ferrite.RefHypercube{dim}, facet_a)
+        flipped && (face_point *= -1)
+        temp_a[idx] = Ferrite.facet_to_element_transformation(face_point, Ferrite.RefHypercube{dim}, facet_a)
+    end
+    _transform_to_parent!(temp_a, (Ferrite.reference_coordinates(Lagrange{Ferrite.RefHypercube{dim},1}())), cell_here.sequence & ((1 << ((dim + 1) * seq_length)) - 1 ))
+    Ferrite.transform_interface_points!(quad_points_b, temp_a, Ferrite.InterfaceOrientationInfo{Ferrite.RefHypercube{dim}, Ferrite.RefHypercube{dim}}(false, interface_transformation.shift_index, interface_transformation.lowest_node_shift_index, interface_transformation.facet_a, interface_transformation.facet_b))
     # TODO: This is the bottleneck, cache it?
     @assert length(quad_points_a) <= length(quad_points_b)
 
