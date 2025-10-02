@@ -200,6 +200,7 @@ Base.@propagate_inbounds function estimate_kelly_interface!(T::Type{<:AbstractFl
         Wf = getdetJdV(interfacevalues, qp) # maybe?
         # TODO urgent why does jump allocate
         ∇u_jump = function_gradient_jump(interfacevalues, qp, u)
+        # ∇u_jump = function_gradient(interfacevalues, qp, u)
         jump_term += norm2(Wf*(( ∇u_jump ⋅ normal)))
     end
     ret = h/(2p)*jump_term

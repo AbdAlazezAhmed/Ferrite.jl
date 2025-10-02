@@ -228,24 +228,14 @@ function update!(data_store::AssembledStiffnessMatrix{<:ElasticArray}, grid, top
     end
 end
 
-struct LTSAMRSynchronizerDataStorage{CMM, CSM, ISM, ASM, DM, SV, TV, EV}
+struct LTSAMRSynchronizerDataStorage{CMM, CSM, ISM, ASM, DM, SV, SourceV, TV, EV}
     cell_mass_matrix::CMM
     cell_stiffness_matrix::CSM
     interface_stiffness_matrix::ISM
     assembled_stiffness_matrix::ASM
     dofs_map::DM
     solution_vector::SV
-    time_vector::TV
-    error_vector::EV
-end
-
-struct LTSAMRSynchronizerDataStorage{CMM, CSM, ISM, ASM, DM, SV, TV, EV}
-    cell_mass_matrix::CMM
-    cell_stiffness_matrix::CSM
-    interface_stiffness_matrix::ISM
-    assembled_stiffness_matrix::ASM
-    dofs_map::DM
-    solution_vector::SV
+    source_vector::SourceV
     time_vector::TV
     error_vector::EV
 end
@@ -432,6 +422,7 @@ function sync_amr_refinement_forward!(grid::KoppGrid, sync::LTSAMRSynchronizer{O
     Base.resize!(sync.data_stores.dofs_map,                             sync.data_stores_prev.dofs_map, new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) + n_refined_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.assembled_stiffness_matrix,           sync.data_stores_prev.assembled_stiffness_matrix, new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) + n_refined_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.solution_vector,                      sync.data_stores_prev.solution_vector, new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) + n_refined_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
+    Base.resize!(sync.data_stores.source_vector,                      sync.data_stores_prev.source_vector, new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) + n_refined_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.time_vector,                          sync.data_stores_prev.time_vector, new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) + n_refined_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.error_vector,                         sync.data_stores_prev.error_vector, new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) + n_refined_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
 
@@ -447,6 +438,7 @@ function sync_amr_coarsening_forward!(grid::KoppGrid, sync::LTSAMRSynchronizer{O
     Base.resize!(sync.data_stores.interface_stiffness_matrix,           sync.data_stores_prev.interface_stiffness_matrix,            new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) - n_coarsened_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.assembled_stiffness_matrix,           sync.data_stores_prev.assembled_stiffness_matrix,            new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) - n_coarsened_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.dofs_map,                             sync.data_stores_prev.dofs_map,                              new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) - n_coarsened_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
+    Base.resize!(sync.data_stores.source_vector,                      sync.data_stores_prev.source_vector,                       new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) - n_coarsened_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.solution_vector,                      sync.data_stores_prev.solution_vector,                       new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) - n_coarsened_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.time_vector,                          sync.data_stores_prev.time_vector,                           new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) - n_coarsened_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
     Base.resize!(sync.data_stores.error_vector,                         sync.data_stores_prev.error_vector,                          new_length, n_neighborhoods ÷ 2, maximum(sync.dh.cell_dofs) - n_coarsened_cells * (2^Dim - 1) * sync.dh.subdofhandlers[1].ndofs_per_cell)
@@ -479,6 +471,7 @@ function sync_amr_refinement_backward!(sync::LTSAMRSynchronizer, refinement_cach
     update!(sync.data_stores.interface_stiffness_matrix, sync.data_stores_prev.interface_stiffness_matrix, grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev, sync.values_cache)
     update!(sync.data_stores.dofs_map, grid, topology, sync.dh,ndofs_cell)
     update!(sync.data_stores.assembled_stiffness_matrix, grid, topology, sync.data_stores.dofs_map, sync.data_stores.cell_stiffness_matrix, sync.data_stores.interface_stiffness_matrix)
+    update!(sync.data_stores.source_vector, sync.data_stores_prev.source_vector, grid, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev)
     update!(sync.data_stores.solution_vector, sync.data_stores_prev.solution_vector, grid, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev)
     update!(sync.data_stores.time_vector, sync.data_stores_prev.time_vector, refinement_cache)
     update!(sync.data_stores.error_vector, sync.data_stores_prev.error_vector, sync.data_stores.solution_vector, grid, topology, sync.dh, refinement_cache, sync.values_cache, ndofs_cell)
@@ -502,6 +495,7 @@ function sync_amr_coarsening_backward!(sync::LTSAMRSynchronizer, refinement_cach
     update!(sync.data_stores.interface_stiffness_matrix, sync.data_stores_prev.interface_stiffness_matrix, grid, topology, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev, sync.values_cache)
     update!(sync.data_stores.dofs_map, grid, topology, sync.dh,ndofs_cell)
     update!(sync.data_stores.assembled_stiffness_matrix, grid, topology, sync.data_stores.dofs_map, sync.data_stores.cell_stiffness_matrix, sync.data_stores.interface_stiffness_matrix)
+    update!(sync.data_stores.source_vector, sync.data_stores_prev.source_vector, grid, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev)
     update!(sync.data_stores.solution_vector, sync.data_stores_prev.solution_vector, grid, sync.dh, refinement_cache, sync.celldofs_prev, sync.cell_dofs_offset_prev, sync.cell_to_subdofhandler_prev)
     update!(sync.data_stores.time_vector, sync.data_stores_prev.time_vector, refinement_cache)
     update!(sync.data_stores.error_vector, sync.data_stores_prev.error_vector, sync.data_stores.solution_vector, grid, topology, sync.dh, refinement_cache, sync.values_cache, ndofs_cell)
@@ -534,6 +528,7 @@ function assemble_element_matrix!(K::CellStiffnessMatrix, kopp_values::ValuesCac
     Ke = @view K.data[:, :, cell_idx]
     cv = kopp_values.cell_values
     n_basefuncs = getnbasefunctions(cv)
+    κ = SymmetricTensor{2,2,Float64}((4.5e-5, 0, 2.0e-5))
     for q_point in 1:getnquadpoints(cv)
         ## Get the quadrature weight
         dΩ = getdetJdV(cv, q_point)
@@ -544,7 +539,7 @@ function assemble_element_matrix!(K::CellStiffnessMatrix, kopp_values::ValuesCac
             for j in 1:n_basefuncs
                 ∇u = shape_gradient(cv, q_point, j)
                 ## Add contribution to Ke
-                Ke[i, j] += 0.01 * (∇δu ⋅ ∇u) * dΩ
+                Ke[i, j] +=  (∇δu ⋅ κ ⋅ ∇u) * dΩ
             end
         end
     end
@@ -553,6 +548,7 @@ end
 function assemble_element_matrix!(K::InterfaceStiffnessMatrix, kopp_values::ValuesCache, interface_index, μ::Float64=5.)
     Ki = @view K.data[:, :, interface_index]
     Ki .= 0.0
+    κ = SymmetricTensor{2,2,Float64}((4.5e-5, 0, 2.0e-5))
     iv = kopp_values.interface_values
     for q_point in 1:getnquadpoints(iv)
         # Get the normal to facet A
@@ -570,7 +566,7 @@ function assemble_element_matrix!(K::InterfaceStiffnessMatrix, kopp_values::Valu
                 u_jump = shape_value_jump(iv, q_point, j) * (-normal)
                 ∇u_avg = shape_gradient_average(iv, q_point, j)
                 # Add contribution to Ki
-                Ki[i, j] += 0.01 * (-(δu_jump ⋅ ∇u_avg + ∇δu_avg ⋅ u_jump) * dΓ + μ * (δu_jump ⋅ u_jump) * dΓ)
+                Ki[i, j] += (-(δu_jump ⋅ κ ⋅ ∇u_avg + ∇δu_avg ⋅ κ ⋅ u_jump) * dΓ + μ * (δu_jump ⋅ κ ⋅ u_jump) * dΓ)
             end
         end
     end
@@ -619,6 +615,7 @@ function LTSAMRSynchronizer(grid::KoppGrid, dh::Ferrite.AbstractDofHandler, kopp
     #     new_offset += 1
     # end
     u = SolutionVector(_u)
+    s = SolutionVector(deepcopy(_u))
     ncells = getncells(grid)
     t = TimeVector(zeros(getncells(grid)))
     ansatz_isactive = trues(ndofs(dh))
@@ -641,6 +638,7 @@ function LTSAMRSynchronizer(grid::KoppGrid, dh::Ferrite.AbstractDofHandler, kopp
         K_assembled,
         dofs_map,
         u,
+        s,
         t,
         error
     )
