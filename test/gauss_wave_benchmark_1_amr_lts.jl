@@ -44,6 +44,18 @@ begin
         du[2] = e*(b*φₘ - c*s - d)
         return nothing
     end
+    function traveling_wave_source(x, t, c=0.1;
+        ϕ = ξ -> exp(-ξ^2),
+        ϕ′ = ξ -> -2ξ * exp(-ξ^2),
+        ϕ″ = ξ -> (4ξ^2 - 2) * exp(-ξ^2))
+
+        ξ = x - c * t  # traveling wave coordinate
+
+        u = ϕ(ξ)
+        f = -c * ϕ′(ξ) - ϕ″(ξ)
+
+        return u, f
+    end
     function cell_rhs(φₘ::TU, s::TU,cell_parameters::FHNModel) where {TU}
         @unpack a,b,c,d,e = cell_parameters
         return φₘ *(1 -φₘ)*(φₘ -a) - s, e*(b*φₘ - c*s - d)
@@ -89,8 +101,8 @@ begin
     end;
 
     function solve_direct(grid::KoppGrid{Dim}, topology, dh, refinement_cache, sync, threshold, io_enabled::Bool=false) where Dim
-        pvd = io_enabled ? paraview_collection("spiral-benchmark-1-lts") : nothing
-        T_end = 5000.0
+        pvd = io_enabled ? paraview_collection("gauss-benchmark-1-lts") : nothing
+        T_end = 1000.0
         ndofs_cell = 4
         u = sync.data_stores.solution_vector.data
         s = sync.data_stores.source_vector.data
@@ -141,7 +153,7 @@ begin
                 dh2.grid.cells .= fgrid.cells
                 resize!(dh2.grid.nodes, length(fgrid.nodes))
                 dh2.grid.nodes .= fgrid.nodes
-                VTKGridFile("spiral-benchmark-1-lts/spiral-$T.vtu", fgrid; write_discontinuous=true) do vtk
+                VTKGridFile("gauss-benchmark-1-lts/gauss-$T.vtu", fgrid; write_discontinuous=true) do vtk
                     write_solution(vtk, dh2, u, "_")
                     write_solution(vtk, dh2, s, "s_")
                     write_cell_data(vtk, error_vector[leaves], "__")
@@ -202,10 +214,11 @@ begin
                 # minv = inv((sync.data_stores.cell_mass_matrix.data[:, :, nei]))
                 cm = FHNModel()
                 # rhs = cell_rhs.(u[dofs_temp_storage], s[dofs_temp_storage], Ref(cm))
-                for i in dofs_temp_storage
+                for (local_i , i) in enumerate(dofs_temp_storage)
+                    coords = getcoordinates()
                     u_i = u[i]
                     s_i = s[i]
-                    u[i] += cell_rhs(u_i, s_i, cm)[1] * Δt
+                    u[i] += traveling_wave_source(u_i, s_i, cm)[1] * Δt
                     s[i] += cell_rhs(u_i, s_i, cm)[2] * Δt
                 end
                 # u[dofs_temp_storage] .+= getindex.(rhs, 1) * Δt
