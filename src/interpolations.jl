@@ -2132,3 +2132,133 @@ adjust_dofs_during_distribution(::Nedelec{RefHexahedron, 1}) = false
 function get_direction(::Nedelec{RefHexahedron, 1}, shape_nr, cell)
     return get_edge_direction(cell, shape_nr) # shape_nr = edge_nr
 end
+
+#####################################
+#        Integrated Legendre        #
+#   We hardcode hexahedron for now  #
+#####################################
+using ElasticArrays
+struct TensorMasks{EAT <: ElasticArray}
+    # ip_orders::Vector{Int}
+    masks_array::EAT
+end
+
+function get_linear_index(tensor_index::NTuple{Dim, Int}, ip_orders::NTuple{Dim, Int}) where Dim
+    linear_index = 0
+
+    for dim in Dim:-1:2
+        i = tensor_index[dim]
+        linear_index += (i - 1) * prod(j -> ip_orders[dim-j], 1:dim-1)
+    end
+    linear_index += tensor_index[1]
+    return linear_index
+end
+
+function get_tensor_index(linear_index::Int, ip_orders::NTuple{Dim, Int}) where Dim
+    linear_index_temp = linear_index
+    tensor_index = MVector{Dim, Int}(undef)
+    for dim in Dim:-1:2
+        product_ = prod(j -> ip_orders[dim-j], 1:dim-1)
+        res, rem = divrem(linear_index_temp, product_)
+        tensor_index[dim] = res + 1
+        linear_index_temp -= res * product_
+    end
+    tensor_index[1] = linear_index_temp
+    return Tuple(tensor_index)
+end
+# After solving the problem we want to transfer the solution
+# from our AMR linear indixing to the Ferrite indixing to export as VTK
+function tensor_to_ferrite_index()
+
+end
+
+struct IntegratedLegendre{shape, order} <: ScalarInterpolation{shape, order}
+
+end
+
+adjust_dofs_during_distribution(::IntegratedLegendre) = true
+adjust_dofs_during_distribution(::IntegratedLegendre{<:Any, 2}) = false
+adjust_dofs_during_distribution(::IntegratedLegendre{<:Any, 1}) = false
+vertexdof_indices(ip::IntegratedLegendre{RefHexahedron}) = ((1,), (2,))
+facedof_indices(::IntegratedLegendre{RefHexahedron, 1}) = ((1, 4, 3, 2), (1, 2, 6, 5), (2, 3, 7, 6), (3, 4, 8, 7), (1, 5, 8, 4), (5, 6, 7, 8))
+edgedof_indices(::IntegratedLegendre{RefHexahedron, 1}) = ((1, 2), (2, 3), (3, 4), (4, 1), (5, 6), (6, 7), (7, 8), (8, 5), (1, 5), (2, 6), (3, 7), (4, 8))
+
+
+mapping_type(::IntegratedLegendre) = IdentityMapping()
+conformity(::IntegratedLegendre) = H1Conformity()
+getlowerorder(::IntegratedLegendre{shape, order}) where {shape, order} = IntegratedLegendre{shape, order - 1}()
+
+getnbasefunctions(::IntegratedLegendre{RefLine, order}) where order = order + 1
+
+edgedof_indices(::IntegratedLegendre{RefLine, order}) where order = (ntuple(i -> i, order),)
+edgedof_interior_indices(::IntegratedLegendre{RefLine, order}) where order = (ntuple(i -> i + 2, order - 2),)
+
+function lagrange_polynomial_value(order, coord)
+    if order == 0
+        return 1
+    elseif order == 1
+        return coord
+    end
+    L_1_order_lower = lagrange_polynomial_value(order - 1, coord)
+    L_2_orders_lower = lagrange_polynomial_value(order - 2, coord)
+    return (2order - 1)/order * coord * L_1_order_lower - (order - 1)/order * L_2_orders_lower
+end
+
+function reference_shape_value(ip::IntegratedLegendre{RefLine, order}, ξ::Vec{1}, i::Int) where order
+    q = i - 1
+    ξ_x = ξ[1]
+    i == 1 && return (1 - ξ_x) / 2
+    i == 2 && return (1 + ξ_x) / 2
+    # Dumbfucks use 0 based indexing
+    L = lagrange_polynomial_value(ξ_x, q)
+    L_2_orders_lower = lagrange_polynomial_value(ξ_x, q - 2)
+    return (L - L_2_orders_lower)/√(4q - 2)
+end
+
+
+
+#####################################
+#           Tensor Product          #
+#####################################
+struct TensorProductInterpolation{IP, Dim}
+    ip::IP
+    orders::NTuple{Dim, Int}
+end
+
+adjust_dofs_during_distribution(ip::TensorProductInterpolation) = adjust_dofs_during_distribution(ip.ip)
+
+vertexdof_indices(ip::IntegratedLegendre{RefLine}) = ((1,), (2,))
+
+mapping_type(::IntegratedLegendre) = IdentityMapping()
+conformity(::IntegratedLegendre) = H1Conformity()
+getlowerorder(::IntegratedLegendre{shape, order}) where {shape, order} = IntegratedLegendre{shape, order - 1}()
+
+getnbasefunctions(::IntegratedLegendre{RefLine, order}) where order = order + 1
+
+edgedof_indices(::IntegratedLegendre{RefLine, order}) where order = (ntuple(i -> i, order),)
+edgedof_interior_indices(::IntegratedLegendre{RefLine, order}) where order = (ntuple(i -> i + 2, order - 2),)
+
+mapping_type(::Nedelec) = CovariantPiolaMapping()
+conformity(::Nedelec) = HcurlConformity()
+edgedof_indices(ip::Nedelec) = edgedof_interior_indices(ip)
+
+# 2D refshape (rdim == vdim for Nedelec)
+facedof_indices(ip::Nedelec{<:AbstractRefShape{2}}) = (ntuple(i -> i, getnbasefunctions(ip)),)
+
+# RefTriangle, 1st order Lagrange
+# https://defelement.org/elements/examples/triangle-nedelec1-lagrange-0.html
+function reference_shape_value(ip::Nedelec{RefTriangle, 1}, ξ::Vec{2}, i::Int)
+    x, y = ξ
+    i == 1 && return Vec(- y, x)
+    i == 2 && return Vec(- y, x - 1) # Changed sign, follow Ferrite's sign convention
+    i == 3 && return Vec(1 - y, x)
+    throw(ArgumentError("no shape function $i for interpolation $ip"))
+end
+
+getnbasefunctions(::Nedelec{RefTriangle, 1}) = 3
+edgedof_interior_indices(::Nedelec{RefTriangle, 1}) = ((1,), (2,), (3,))
+adjust_dofs_during_distribution(::Nedelec{RefTriangle, 1}) = false
+
+function get_direction(::Nedelec{RefTriangle, 1}, shape_nr, cell)
+    return get_edge_direction(cell, shape_nr) # shape_nr = edge_nr
+end
